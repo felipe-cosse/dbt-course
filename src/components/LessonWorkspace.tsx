@@ -15,18 +15,27 @@ import {
   Lightbulb,
   Play,
   RefreshCw,
+  Rows3,
   RotateCcw,
+  TableProperties,
   TerminalSquare,
 } from 'lucide-react'
-import type { Lesson } from '../data/course'
+import type { CourseModule, Lesson } from '../data/course'
+import { getLessonAlignment, getModuleLearningGuide } from '../data/learningGuides'
 import { orderPreview, type PreviewRow } from '../data/sampleData'
-import { detectExerciseLanguage, exerciseMode, validateStructure } from '../lib/exerciseValidation'
+import { getLessonSchemaFocus, type SchemaTable } from '../data/schemaMetadata'
+import { detectExerciseLanguage, exerciseMode, validateQueryEvidence, validateStructure } from '../lib/exerciseValidation'
+import { LessonConceptGraph } from './LessonConceptGraph'
+import { SchemaPanel } from './SchemaPanel'
 
 type LessonTab = 'learn' | 'lab' | 'check'
+type DataView = 'preview' | 'schema'
 type RunState = 'idle' | 'loading' | 'success' | 'error'
+type SchemaState = 'idle' | 'loading' | 'ready' | 'error'
 
 type LessonWorkspaceProps = {
   lesson: Lesson
+  module: CourseModule
   lessonIndex: number
   totalLessons: number
   isComplete: boolean
@@ -43,6 +52,7 @@ function fallbackColumns(rows: PreviewRow[]) {
 
 export function LessonWorkspace({
   lesson,
+  module,
   lessonIndex,
   totalLessons,
   isComplete,
@@ -52,7 +62,8 @@ export function LessonWorkspace({
   onComplete,
   onSaveQuiz,
 }: LessonWorkspaceProps) {
-  const [tab, setTab] = useState<LessonTab>('lab')
+  const [tab, setTab] = useState<LessonTab>('learn')
+  const [dataView, setDataView] = useState<DataView>('preview')
   const [editorValue, setEditorValue] = useState(lesson.exercise.starterSql)
   const [runState, setRunState] = useState<RunState>('idle')
   const [terminalLines, setTerminalLines] = useState<string[]>([
@@ -68,6 +79,9 @@ export function LessonWorkspace({
   const [exercisePassed, setExercisePassed] = useState(false)
   const [quizPassed, setQuizPassed] = useState(false)
   const [solutionLoaded, setSolutionLoaded] = useState(false)
+  const [schemaState, setSchemaState] = useState<SchemaState>('idle')
+  const [schemaTables, setSchemaTables] = useState<SchemaTable[]>([])
+  const [selectedSchemaTable, setSelectedSchemaTable] = useState<string>()
 
   const lineNumbers = useMemo(
     () => Array.from({ length: Math.max(12, editorValue.split('\n').length) }, (_, index) => index + 1),
@@ -86,9 +100,28 @@ export function LessonWorkspace({
           : `models/${lesson.id.replaceAll('-', '_')}.sql`
   const isCorrect = selectedAnswer === lesson.quiz.answerIndex
   const canComplete = isComplete || (exercisePassed && quizPassed)
+  const learningGuide = getModuleLearningGuide(module)
+  const alignment = getLessonAlignment(lesson)
+  const focusedSchemaTables = getLessonSchemaFocus(module.id, lesson.id)
+
+  async function openSchema() {
+    setDataView('schema')
+    if (schemaState === 'ready' || schemaState === 'loading') return
+    setSchemaState('loading')
+    try {
+      const { inspectDuckDbSchema } = await import('../lib/duckdbRuntime')
+      const tables = await inspectDuckDbSchema()
+      setSchemaTables(tables)
+      setSelectedSchemaTable((current) => current ?? focusedSchemaTables.find((name) => tables.some((table) => table.physicalName === name)) ?? tables[0]?.physicalName)
+      setSchemaState('ready')
+    } catch {
+      setSchemaState('error')
+    }
+  }
 
   async function runModel() {
     setTab('lab')
+    setDataView('preview')
     setRunState('loading')
     setTerminalLines([
       `$ dbt run --select ${lesson.id.replaceAll('-', '_')}`,
@@ -105,6 +138,8 @@ export function LessonWorkspace({
         if (missingColumns.length) {
           throw new Error(`The result is missing required columns: ${missingColumns.join(', ')}.`)
         }
+        const evidenceError = validateQueryEvidence(lesson.id, result.rows)
+        if (evidenceError) throw new Error(evidenceError)
         setPreviewRows(result.rows.slice(0, 100))
         setPreviewColumns(result.columns)
         setElapsedMs(result.elapsedMs)
@@ -185,11 +220,30 @@ export function LessonWorkspace({
     controls?.[nextIndex]?.focus()
   }
 
+  function moveDataView(event: KeyboardEvent<HTMLButtonElement>) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const views: DataView[] = ['preview', 'schema']
+    const currentIndex = views.indexOf(dataView)
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? views.length - 1
+        : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + views.length) % views.length
+    const nextView = views[nextIndex]
+    if (nextView === 'schema') void openSchema()
+    else setDataView('preview')
+    const controls = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')
+    controls?.[nextIndex]?.focus()
+  }
+
   return (
     <div className="lesson-page">
       <header className="lesson-header">
         <p className="lesson-breadcrumb">
           <button type="button" onClick={onBackToCourse}>Course</button>
+          <ChevronRight size={13} />
+          <span>{module.title}</span>
           <ChevronRight size={13} />
           <span>{lesson.number}</span>
         </p>
@@ -227,32 +281,82 @@ export function LessonWorkspace({
       {tab === 'learn' ? (
         <div id="lesson-panel-learn" aria-labelledby="lesson-tab-learn" className="learn-layout" role="tabpanel">
           <article className="lesson-article">
-            <h2>What you’ll build</h2>
+            <section className="learning-context">
+              <span>Why this matters</span>
+              <h2>{module.description}</h2>
+              <p>{learningGuide.bigIdea}</p>
+            </section>
+
+            <h2>Learning outcomes</h2>
             <ul className="objective-list">
               {lesson.objectives.map((objective) => <li key={objective}><CheckCircle2 size={18} />{objective}</li>)}
             </ul>
+
+            <LessonConceptGraph visual={learningGuide.visual} />
+
+            <section className="key-concepts" aria-labelledby="key-concepts-title">
+              <div className="section-copy">
+                <span>Mental model</span>
+                <h2 id="key-concepts-title">Key concepts for this module</h2>
+              </div>
+              <dl>
+                {learningGuide.terms.map((item) => <div key={item.term}><dt>{item.term}</dt><dd>{item.definition}</dd></div>)}
+              </dl>
+            </section>
+
             {lesson.explanation.map((paragraph, index) => (
-              <div key={paragraph}>
-                {index === 1 ? <h2>Production perspective</h2> : null}
+              <div className="lesson-explanation" key={paragraph}>
+                <span>{index === 0 ? 'Core idea' : index === 1 ? 'Production perspective' : 'Worked reasoning'}</span>
+                <h2>{index === 0 ? 'Understand the core idea' : index === 1 ? 'How this behaves in production' : 'Trace the decision'}</h2>
                 <p>{paragraph}</p>
               </div>
             ))}
+
+            <div className="section-copy code-section-copy">
+              <span>Worked example</span>
+              <h2>Read the implementation, then predict its result</h2>
+              <p>Before opening the lab, identify the input grain, the output grain, and the contract created by each alias.</p>
+            </div>
             <div className="code-example">
               <header><span>{lesson.codeExample.filename}</span><span>{lesson.codeExample.language}</span></header>
               <pre><code>{lesson.codeExample.code}</code></pre>
             </div>
+
+            <section className="practice-bridge">
+              <div>
+                <span>Apply the lesson</span>
+                <h2>Exercise connection</h2>
+                <p>{lesson.exercise.prompt}</p>
+              </div>
+              <aside>
+                <strong>Learning objective</strong>
+                <p>{alignment.exerciseObjective}</p>
+                <button type="button" className="primary-button" onClick={() => setTab('lab')}>Open the exercise <ArrowRight size={16} /></button>
+              </aside>
+            </section>
+
+            <section className="common-mistakes">
+              <div className="section-copy">
+                <span>Debugging guide</span>
+                <h2>Common failure modes</h2>
+              </div>
+              <ol>{learningGuide.pitfalls.map((pitfall) => <li key={pitfall}>{pitfall}</li>)}</ol>
+            </section>
+
             <div className="concept-callout">
-              <strong>Engineering rule</strong>
-              <p>Make the model’s grain and contract obvious before optimizing the query. Reliability is a design decision, not a cleanup step.</p>
+              <strong>Key takeaway</strong>
+              <p>{lesson.summary}</p>
             </div>
           </article>
           <aside className="lesson-sidecard">
             <h2>Lesson map</h2>
             <dl>
+              <div><dt>Module</dt><dd>{module.number}. {module.title}</dd></div>
               <div><dt>Scenario</dt><dd>{lesson.summary}</dd></div>
               <div><dt>Engine</dt><dd>{lesson.engine}</dd></div>
               <div><dt>File</dt><dd><code>{lesson.codeExample.filename}</code></dd></div>
-              <div><dt>Practice</dt><dd>{lesson.exercise.prompt}</dd></div>
+              <div><dt>Practice checks</dt><dd>{alignment.exerciseObjective}</dd></div>
+              <div><dt>Question checks</dt><dd>{alignment.quizObjective}</dd></div>
             </dl>
             <button type="button" className="primary-button" onClick={() => setTab('lab')}>Open the lab <ArrowRight size={16} /></button>
           </aside>
@@ -295,26 +399,68 @@ export function LessonWorkspace({
               </div>
             </section>
 
-            <section className="data-panel" aria-label="Query result preview">
-              <div className="data-head">
-                <div><h2>Data preview: <span>{lesson.id.replaceAll('-', '_')}</span></h2><p>Source: DuckDB · Rows: {previewRows.length}{elapsedMs ? ` · ${elapsedMs.toFixed(0)} ms` : ''}</p></div>
-                <button type="button" aria-label="Refresh preview" onClick={runModel} disabled={runState === 'loading'}><RefreshCw size={16} /></button>
-              </div>
-              {previewRows.length ? (
-                <div className="data-table-wrap">
-                  <table className="data-table">
-                    <thead><tr>{previewColumns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
-                    <tbody>
-                      {previewRows.map((row, index) => (
-                        <tr key={`${index}-${String(row[previewColumns[0]])}`}>
-                          {previewColumns.map((column) => <td key={column}>{row[column] === null ? 'NULL' : String(row[column])}</td>)}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+            <section className="data-panel" aria-label="Lab data explorer">
+              <div className="data-view-bar">
+                <div className="data-view-tabs" role="tablist" aria-label="Lab data views">
+                  <button
+                    id="data-tab-preview"
+                    type="button"
+                    role="tab"
+                    aria-controls="data-panel-preview"
+                    aria-selected={dataView === 'preview'}
+                    tabIndex={dataView === 'preview' ? 0 : -1}
+                    className={dataView === 'preview' ? 'is-active' : ''}
+                    onClick={() => setDataView('preview')}
+                    onKeyDown={moveDataView}
+                  ><Rows3 size={14} /> Preview</button>
+                  <button
+                    id="data-tab-schema"
+                    type="button"
+                    role="tab"
+                    aria-controls="data-panel-schema"
+                    aria-selected={dataView === 'schema'}
+                    tabIndex={dataView === 'schema' ? 0 : -1}
+                    className={dataView === 'schema' ? 'is-active' : ''}
+                    onClick={() => void openSchema()}
+                    onKeyDown={moveDataView}
+                  ><TableProperties size={14} /> Schema</button>
                 </div>
-              ) : <div className="data-empty"><Database size={28} /><p>{mode === 'duckdb' ? 'Run the model to inspect its rows and column contract.' : 'This guided check validates file structure. Run scripts/lab.py build for real dbt results.'}</p></div>}
-              <div className="data-footer"><span>Showing {Math.min(100, previewRows.length)} of {previewRows.length} rows</span><span>Local browser database</span></div>
+                {dataView === 'preview' ? <button type="button" aria-label="Refresh preview" onClick={runModel} disabled={runState === 'loading'}><RefreshCw size={16} /></button> : null}
+              </div>
+
+              {dataView === 'preview' ? (
+                <div id="data-panel-preview" className="data-view-panel" role="tabpanel" aria-labelledby="data-tab-preview">
+                  <div className="data-head">
+                    <div><h2>Data preview: <span>{lesson.id.replaceAll('-', '_')}</span></h2><p>{mode === 'duckdb' ? 'Live DuckDB query' : 'Guided structure result'} · Rows: {previewRows.length}{elapsedMs ? ` · ${elapsedMs.toFixed(0)} ms` : ''}</p></div>
+                  </div>
+                  {previewRows.length ? (
+                    <div className="data-table-wrap">
+                      <table className="data-table">
+                        <thead><tr>{previewColumns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
+                        <tbody>
+                          {previewRows.map((row, index) => (
+                            <tr key={`${index}-${String(row[previewColumns[0]])}`}>
+                              {previewColumns.map((column) => <td key={column}>{row[column] === null ? 'NULL' : String(row[column])}</td>)}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : <div className="data-empty"><Database size={28} /><p>{mode === 'duckdb' ? 'Run the model to inspect its rows and column contract.' : 'This guided check validates file structure. Run scripts/lab.py build for real dbt results.'}</p></div>}
+                  <div className="data-footer"><span>Showing {Math.min(100, previewRows.length)} of {previewRows.length} rows</span><span>{mode === 'duckdb' ? 'Local browser database' : 'Reference structure'}</span></div>
+                </div>
+              ) : (
+                <div id="data-panel-schema" className="data-view-panel" role="tabpanel" aria-labelledby="data-tab-schema">
+                  <SchemaPanel
+                    state={schemaState}
+                    tables={schemaTables}
+                    focusedTables={focusedSchemaTables}
+                    selectedTable={selectedSchemaTable}
+                    onSelectTable={setSelectedSchemaTable}
+                    onRetry={() => { setSchemaState('idle'); void openSchema() }}
+                  />
+                </div>
+              )}
             </section>
 
             <aside className="steps-column">
@@ -322,7 +468,7 @@ export function LessonWorkspace({
                 <h2>Lesson steps</h2>
                 <div className="step-item is-complete">
                   <span className="step-number"><Check size={14} /></span>
-                  <div className="step-copy"><strong>Understand the task</strong><p>{lesson.exercise.prompt}</p><span className="step-state">Complete</span></div>
+                  <div className="step-copy"><strong>Connect the objective</strong><p>{alignment.exerciseObjective}</p><span className="step-state">Complete</span></div>
                 </div>
                 <div className={`step-item ${runState === 'success' ? 'is-complete' : 'is-current'}`}>
                   <span className="step-number">2</span>
@@ -330,7 +476,7 @@ export function LessonWorkspace({
                 </div>
                 <div className={`step-item ${runState === 'success' ? 'is-current' : ''}`}>
                   <span className="step-number">3</span>
-                  <div className="step-copy"><strong>Validate the contract</strong><p>Confirm the result has {lesson.exercise.expectedColumns.join(', ')}.</p><span className="step-state">{runState === 'success' ? 'Ready' : 'Pending'}</span></div>
+                  <div className="step-copy"><strong>Validate the evidence</strong><p>{mode === 'duckdb' ? `Confirm the query returns ${lesson.exercise.expectedColumns.join(', ')}.` : `Confirm the ${language} answer includes ${lesson.exercise.expectedColumns.join(', ')}.`}</p><span className="step-state">{runState === 'success' ? 'Ready' : 'Pending'}</span></div>
                 </div>
                 {hintCount > 0 ? <div className="hint-box"><Lightbulb size={14} /><span>{lesson.exercise.hints[hintCount - 1]}</span></div> : null}
                 {hintCount < lesson.exercise.hints.length ? <button type="button" className="hint-button" onClick={() => setHintCount((count) => count + 1)}>Reveal hint {hintCount + 1}</button> : null}
@@ -339,9 +485,9 @@ export function LessonWorkspace({
                 ) : null}
               </article>
               <article className="dataset-card">
-                <h3>Learning dataset</h3>
-                <p>A deliberately messy commerce fixture. The full local lab also supports the public UCI Online Retail dataset.</p>
-                <dl><dt>Adapter</dt><dd>{lesson.engine}</dd><dt>Profile</dt><dd>dbt_forge</dd><dt>Mode</dt><dd>{mode === 'duckdb' ? 'Real browser SQL' : 'Guided check + local dbt'}</dd></dl>
+                <h3>Execution context</h3>
+                <p>The browser uses a focused DuckDB fixture. The full project runs dbt on DuckDB and PostgreSQL, with MySQL as the operational extraction source.</p>
+                <dl><dt>Lesson</dt><dd>{lesson.engine}</dd><dt>Profile</dt><dd>dbt_course</dd><dt>Mode</dt><dd>{mode === 'duckdb' ? 'Real browser SQL' : 'Guided check + local dbt'}</dd></dl>
               </article>
             </aside>
           </div>
@@ -352,6 +498,7 @@ export function LessonWorkspace({
         <div id="lesson-panel-check" aria-labelledby="lesson-tab-check" className="check-layout" role="tabpanel">
           <article className="quiz-card">
             <span>KNOWLEDGE CHECK</span>
+            <p className="quiz-objective">Checks: {alignment.quizObjective}</p>
             <h2>{lesson.quiz.question}</h2>
             <div className="quiz-options">
               {lesson.quiz.options.map((option, index) => {
@@ -374,8 +521,8 @@ export function LessonWorkspace({
             ) : null}
           </article>
           <aside className="check-aside">
-            <h2>Before you move on</h2>
-            <p>A lesson is complete when you can explain the decision, not just recognize the syntax.</p>
+            <h2>Explain the decision</h2>
+            <p>Use the lesson’s data, code example, and production trade-off to justify the answer—not syntax recognition alone.</p>
             <ul>{lesson.objectives.map((objective) => <li key={objective}><CheckCircle2 size={15} />{objective}</li>)}</ul>
           </aside>
         </div>

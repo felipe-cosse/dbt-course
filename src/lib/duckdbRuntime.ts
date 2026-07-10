@@ -2,6 +2,14 @@ import * as duckdb from '@duckdb/duckdb-wasm'
 import mvpWasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url'
 import mvpWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url'
 import { bootstrapStatements, type PreviewRow } from '../data/sampleData'
+import {
+  mergeSchemaInspection,
+  schemaCatalog,
+  schemaCountSql,
+  type SchemaColumnInspection,
+  type SchemaCountInspection,
+  type SchemaTable,
+} from '../data/schemaMetadata'
 
 export type QueryResult = {
   columns: string[]
@@ -20,11 +28,14 @@ function compileDbtSql(sql: string) {
     .replace(/\{\{\s*ref\(\s*['"]stg_customers['"]\s*\)\s*\}\}/g, '(select * from raw_customers)')
     .replace(/\{\{\s*ref\(\s*['"]stg_products['"]\s*\)\s*\}\}/g, '(select * from raw_products)')
     .replace(/\{\{\s*ref\(\s*['"]stg_order_items['"]\s*\)\s*\}\}/g, '(select * from raw_order_items)')
+    .replace(/\{\{\s*ref\(\s*['"]stg_payments['"]\s*\)\s*\}\}/g, '(select * from raw_payments)')
+    .replace(/\{\{\s*ref\(\s*['"]stg_returns['"]\s*\)\s*\}\}/g, '(select * from raw_returns)')
     .replace(/\braw\.orders\b/g, 'raw_orders')
     .replace(/\braw\.customers\b/g, 'raw_customers')
     .replace(/\braw\.products\b/g, 'raw_products')
     .replace(/\braw\.order_items\b/g, 'raw_order_items')
     .replace(/\braw\.payments\b/g, 'raw_payments')
+    .replace(/\braw\.returns\b/g, 'raw_returns')
     .trim()
 }
 
@@ -82,4 +93,42 @@ export async function runDuckDbQuery(dbtSql: string): Promise<QueryResult> {
     elapsedMs: performance.now() - startedAt,
     compiledSql,
   }
+}
+
+export async function inspectDuckDbSchema(): Promise<SchemaTable[]> {
+  const connection = await getConnection()
+  const allowedTables = schemaCatalog.map((table) => `'${table.physicalName}'`).join(', ')
+  const columnResult = await connection.query(`
+    select
+      table_name,
+      column_name,
+      data_type,
+      is_nullable,
+      ordinal_position
+    from information_schema.columns
+    where table_schema = 'main'
+      and table_name in (${allowedTables})
+    order by table_name, ordinal_position
+  `)
+  const countResult = await connection.query(schemaCountSql)
+
+  const columns: SchemaColumnInspection[] = columnResult.toArray().map((row) => {
+    const value = typeof row.toJSON === 'function' ? row.toJSON() : row
+    return {
+      tableName: String(value.table_name),
+      columnName: String(value.column_name),
+      dataType: String(value.data_type),
+      nullable: String(value.is_nullable).toUpperCase() === 'YES',
+      ordinal: Number(value.ordinal_position),
+    }
+  })
+  const counts: SchemaCountInspection[] = countResult.toArray().map((row) => {
+    const value = typeof row.toJSON === 'function' ? row.toJSON() : row
+    return {
+      tableName: String(value.table_name),
+      rowCount: Number(value.row_count),
+    }
+  })
+
+  return mergeSchemaInspection(columns, counts)
 }

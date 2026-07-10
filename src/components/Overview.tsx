@@ -103,6 +103,10 @@ export function Overview({
                   </button>
                   {isExpanded ? (
                     <div className="module-lessons">
+                      <div className="module-learning-summary">
+                        <p>{module.description}</p>
+                        <ul>{module.outcomes.map((outcome) => <li key={outcome}>{outcome}</li>)}</ul>
+                      </div>
                       {module.lessons.map((lesson) => (
                         <button type="button" key={lesson.id} onClick={() => onSelectLesson(lesson)}>
                           <span>{completedSet.has(lesson.id) ? <Check size={15} /> : lesson.number}</span>
@@ -128,10 +132,10 @@ export function Overview({
             <h2>Capstone: Commerce warehouse</h2>
             <p>Turn messy orders, customers, payments, and returns into tested dimensional models.</p>
             <div className="deliverable-list">
-              <span><Box size={17} /> 13 models</span>
-              <span><TestTube2 size={17} /> 19 tests</span>
+              <span><Box size={17} /> 14 core models</span>
+              <span><TestTube2 size={17} /> 3 singular tests</span>
               <span><Clock3 size={17} /> 1 snapshot</span>
-              <span><Code2 size={17} /> CI workflow</span>
+              <span><Code2 size={17} /> 3 database roles</span>
             </div>
             <button type="button" className="outline-button" onClick={onOpenCapstone}>
               View project brief <ArrowRight size={17} />

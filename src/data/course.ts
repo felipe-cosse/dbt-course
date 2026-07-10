@@ -92,7 +92,7 @@ export const courseModules: CourseModule[] = [
         summary: 'Place dbt between ingestion and consumption, with a clear boundary between raw data, transformations, and orchestration.',
         objectives: ['Distinguish ETL from ELT', 'Describe what dbt does and deliberately does not do', 'Recognize the compile-run-test-document loop'],
         explanation: [
-          'Our fictional retailer, Northstar Shop, lands operational orders, customers, products, payments, and shipments in a raw schema. In ELT, ingestion preserves those records first; warehouse SQL then turns them into trusted analytical relations. dbt owns that transformation layer without replacing extraction, BI, or the warehouse itself.',
+          'Our fictional retailer, Northstar Shop, lands operational orders, customers, products, payments, and returns in a raw schema. In ELT, ingestion preserves those records first; warehouse SQL then turns them into trusted analytical relations. dbt owns that transformation layer without replacing extraction, BI, or the warehouse itself.',
           'A dbt model is primarily a SELECT statement plus configuration. dbt resolves dependencies, renders Jinja into warehouse SQL, executes models in dependency order, tests assumptions, and publishes metadata. This separation gives data engineers version control, reviewable changes, reproducible builds, and observable lineage.'
         ],
         codeExample: {
@@ -266,7 +266,7 @@ models:
         data_tests:
           - accepted_values:
               arguments:
-                values: ['pending', 'paid', 'shipped', 'delivered', 'cancelled']`
+                values: ['pending', 'completed', 'shipped', 'returned', 'cancelled']`
         },
         exercise: {
           prompt: 'Define tests for stg_order_items that protect its composite grain, required product key, and positive quantity.',
@@ -360,23 +360,23 @@ where o.order_id is null`,
         summary: 'Express business-specific assertions and calibrate warning versus error behavior without hiding genuine defects.',
         objectives: ['Write singular tests as failing-row queries', 'Configure severity and failure thresholds', 'Separate anomaly monitoring from hard invariants'],
         explanation: [
-          'A singular test is ordinary SQL saved under tests/ and should return violating rows. Northstar asserts that delivered orders have a shipment delivery timestamp and that successful payment totals do not exceed the order total beyond a rounding tolerance. Keep the failing record identifiers in the output so incidents are actionable.',
+          'A singular test is ordinary SQL saved under tests/ and should return violating rows. Northstar asserts that every fulfilled order has a positive captured payment amount and that return quantities never exceed sold quantities. Keep the failing record identifiers in the output so incidents are actionable.',
           'Hard invariants such as unique order IDs should fail immediately. Distribution shifts and freshness delays may warn at a lower threshold and error at a higher one. Thresholds must be justified by operational tolerance; setting warn_if merely to make CI green converts a control into decoration.'
         ],
         codeExample: {
-          title: 'Delivered orders require delivery evidence',
+          title: 'Fulfilled orders require captured payment evidence',
           language: 'sql',
-          filename: 'tests/assert_delivered_orders_have_timestamp.sql',
+          filename: 'tests/assert_fulfilled_orders_have_captured_payment.sql',
           code: sql`select
     order_id,
     order_status,
-    delivered_at
-from {{ ref('int_orders_with_shipping') }}
-where order_status = 'delivered'
-  and delivered_at is null`
+    captured_payment_amount
+from {{ ref('fct_orders') }}
+where is_fulfilled
+  and captured_payment_amount <= 0`
         },
         exercise: {
-          prompt: 'Return successful payments with non-positive amounts as failing rows and configure the test to warn rather than error.',
+          prompt: 'Return captured payments with non-positive amounts as failing rows and configure the test to warn rather than error.',
           starterSql: sql`{{ config(severity='___') }}
 
 select
@@ -389,11 +389,11 @@ where -- success
 select
     payment_id,
     order_id,
-    amount
+    payment_amount
 from {{ ref('stg_payments') }}
-where payment_status = 'success'
-  and amount <= 0`,
-          expectedColumns: ['payment_id', 'order_id', 'amount'],
+where payment_status = 'captured'
+  and payment_amount <= 0`,
+          expectedColumns: ['payment_id', 'order_id', 'payment_amount'],
           hints: ['A singular test is a SELECT of failures.', 'Use the model config function at the top.', 'Both payment state and amount belong in the predicate.']
         },
         quiz: {
@@ -419,21 +419,21 @@ where payment_status = 'success'
         codeExample: {
           title: 'Aggregate before joining across grains',
           language: 'sql',
-          filename: 'models/intermediate/int_payments_by_order.sql',
+          filename: 'models/intermediate/int_orders_enriched.sql',
           code: sql`select
     order_id,
-    sum(amount) as paid_amount,
-    count(*) as successful_payment_count
+    sum(payment_amount) as paid_amount,
+    count(*) as captured_payment_count
 from {{ ref('stg_payments') }}
-where payment_status = 'success'
+where payment_status = 'captured'
 group by order_id`
         },
         exercise: {
-          prompt: 'Write a fanout diagnostic comparing item rows before and after joining order-level payments.',
+          prompt: 'Write a fanout diagnostic comparing item rows before and after the unsafe join to payment-attempt grain.',
           starterSql: sql`with joined as (
     select -- item and payment fields
     from {{ ref('stg_order_items') }} as i
-    left join {{ ref('int_payments_by_order') }} as p
+    left join {{ ref('stg_payments') }} as p
       on -- key
 )
 select
@@ -441,9 +441,9 @@ select
     -- joined count,
     -- difference`,
           solutionSql: sql`with joined as (
-    select i.order_id, i.order_item_id, p.paid_amount
+    select i.order_id, i.order_item_id, p.payment_id, p.payment_amount
     from {{ ref('stg_order_items') }} as i
-    left join {{ ref('int_payments_by_order') }} as p
+    left join {{ ref('stg_payments') }} as p
       on i.order_id = p.order_id
 )
 select
@@ -452,13 +452,86 @@ select
     count(*) - (select count(*) from {{ ref('stg_order_items') }}) as fanout_rows
 from joined`,
           expectedColumns: ['original_item_rows', 'joined_item_rows', 'fanout_rows'],
-          hints: ['Aggregate payments before the join.', 'A many-to-one join should preserve item count.', 'Compare counts in one result so the failure is visible.']
+          hints: ['Join payment attempts directly first to reproduce the incident.', 'Multiple attempts can multiply each order item.', 'After diagnosing, aggregate captured payments to order grain before the production join.']
         },
         quiz: {
           question: 'What is the correct way to join many payments into a one-row-per-order fact?',
           options: ['Join raw payments and use distinct', 'Aggregate payments to order grain first', 'Multiply totals by item count', 'Remove orders with multiple payments'],
           answerIndex: 1,
           explanation: 'Pre-aggregation aligns grains and prevents the payment amount from being repeated by lower-grain rows.'
+        }
+      },
+      {
+        id: 'm04-l05',
+        number: '4.5',
+        title: 'Lab: Unit Test Transformation Logic',
+        minutes: 55,
+        lab: true,
+        engine: 'Cross-database',
+        summary: 'Validate conditional model logic with small static inputs and expected rows before materializing the model against warehouse data.',
+        objectives: ['Distinguish unit tests from data tests', 'Define given and expected fixture rows', 'Run unit tests in development and CI'],
+        explanation: [
+          'Data tests inspect records that already exist in a built relation. dbt unit tests take a different path: they replace direct model inputs with small fixtures, execute the model logic, and compare the result with expected rows before the model is materialized. This is most valuable for CASE expressions, date math, window functions, bug fixes, and other logic with important edge cases.',
+          'Northstar classifies an order as fulfilled only when its status is completed, shipped, or returned. A four-row fixture can prove the behavior for completed, cancelled, pending, and null states without scanning the full orders table. Keep fixtures minimal: include only the columns needed by the logic and make every row represent a reasoned test case.',
+          'Run unit tests during development and CI, where they provide fast feedback. Continue using data tests after materialization to detect real source quality problems; one test type does not replace the other.'
+        ],
+        codeExample: {
+          title: 'A focused unit test for order status logic',
+          language: 'yaml',
+          filename: 'models/marts/_unit_tests.yml',
+          code: sql`unit_tests:
+  - name: order_fulfillment_status
+    model: fct_orders
+    given:
+      - input: ref('int_orders_enriched')
+        rows:
+          - {order_id: O1, order_status: completed}
+          - {order_id: O2, order_status: cancelled}
+          - {order_id: O3, order_status: null}
+    expect:
+      rows:
+        - {order_id: O1, is_fulfilled: true}
+        - {order_id: O2, is_fulfilled: false}
+        - {order_id: O3, is_fulfilled: false}`
+        },
+        exercise: {
+          prompt: 'Define a unit test for fct_orders that proves completed and shipped orders are fulfilled while cancelled, pending, and null statuses are not.',
+          starterSql: sql`unit_tests:
+  - name: ___
+    model: fct_orders
+    given:
+      - input: ref('int_orders_enriched')
+        rows:
+          # add five edge cases
+    expect:
+      rows:
+          # declare the expected is_fulfilled values`,
+          solutionSql: sql`unit_tests:
+  - name: order_fulfillment_edge_cases
+    model: fct_orders
+    given:
+      - input: ref('int_orders_enriched')
+        rows:
+          - {order_id: O1, order_status: completed}
+          - {order_id: O2, order_status: shipped}
+          - {order_id: O3, order_status: cancelled}
+          - {order_id: O4, order_status: pending}
+          - {order_id: O5, order_status: null}
+    expect:
+      rows:
+          - {order_id: O1, is_fulfilled: true}
+          - {order_id: O2, is_fulfilled: true}
+          - {order_id: O3, is_fulfilled: false}
+          - {order_id: O4, is_fulfilled: false}
+          - {order_id: O5, is_fulfilled: false}`,
+          expectedColumns: ['unit_tests', 'given', 'expect', 'is_fulfilled'],
+          hints: ['Mock the direct ref used by fct_orders.', 'Give every fixture row an explicit expected output.', 'Run only unit tests with dbt test --select "test_type:unit".']
+        },
+        quiz: {
+          question: 'A CASE expression has five important edge cases. What is the fastest reliable check before the model is materialized?',
+          options: ['A source freshness check', 'A unit test with static inputs and expected rows', 'A dashboard screenshot', 'A row-count warning after deployment'],
+          answerIndex: 1,
+          explanation: 'A unit test isolates the transformation logic and verifies every chosen edge case before the full model build.'
         }
       }
     ]
@@ -487,7 +560,7 @@ from joined`,
           title: 'Generate status counts with a loop',
           language: 'jinja',
           filename: 'models/marts/order_status_summary.sql',
-          code: sql`{% set statuses = ['paid', 'shipped', 'delivered', 'cancelled'] %}
+          code: sql`{% set statuses = ['pending', 'completed', 'shipped', 'returned', 'cancelled'] %}
 
 select
     order_date,
@@ -502,22 +575,22 @@ group by order_date`
           prompt: 'Use a Jinja loop to generate gross revenue columns for card, wallet, and bank_transfer payment methods.',
           starterSql: sql`{% set methods = [___] %}
 select
-    order_date,
+    cast(paid_at as date) as payment_date,
     {% for method in methods %}
     -- conditional sum
     {% endfor %}
-from {{ ref('fct_payments') }}
-group by order_date`,
+from {{ ref('stg_payments') }}
+group by cast(paid_at as date)`,
           solutionSql: sql`{% set methods = ['card', 'wallet', 'bank_transfer'] %}
 select
-    order_date,
+    cast(paid_at as date) as payment_date,
     {% for method in methods %}
-    sum(case when payment_method = '{{ method }}' then amount else 0 end)
+    sum(case when payment_method = '{{ method }}' then payment_amount else 0 end)
         as {{ method }}_amount{% if not loop.last %},{% endif %}
     {% endfor %}
-from {{ ref('fct_payments') }}
-group by order_date`,
-          expectedColumns: ['order_date', 'card_amount', 'wallet_amount', 'bank_transfer_amount'],
+from {{ ref('stg_payments') }}
+group by cast(paid_at as date)`,
+          expectedColumns: ['payment_date', 'card_amount', 'wallet_amount', 'bank_transfer_amount'],
           hints: ['The list contains quoted strings.', 'Use loop.last to avoid a trailing comma.', 'The generated alias may safely use the method value.']
         },
         quiz: {
@@ -549,23 +622,25 @@ group by order_date`,
 {% endmacro %}`
         },
         exercise: {
-          prompt: 'Write a macro cents_to_currency(column_name) that returns a decimal(18,2) value divided by 100, then call it for price_cents.',
-          starterSql: sql`{% macro cents_to_currency(column_name) %}
-    -- expression
+          prompt: 'Write revenue_after_discount(quantity, unit_price, discount_pct), then call it for staged order items.',
+          starterSql: sql`{% macro revenue_after_discount(quantity, unit_price, discount_pct) %}
+    -- reusable expression
 {% endmacro %}
 
 select
-    {{ cents_to_currency('___') }} as unit_price
-from {{ ref('stg_products_raw') }}`,
-          solutionSql: sql`{% macro cents_to_currency(column_name) %}
-    cast({{ column_name }} as decimal(18, 2)) / 100
+    order_item_id,
+    {{ revenue_after_discount('___', '___', '___') }} as net_item_amount
+from {{ ref('stg_order_items') }}`,
+          solutionSql: sql`{% macro revenue_after_discount(quantity, unit_price, discount_pct) %}
+    ({{ quantity }}) * ({{ unit_price }}) * (1 - ({{ discount_pct }}))
 {% endmacro %}
 
 select
-    {{ cents_to_currency('price_cents') }} as unit_price
-from {{ ref('stg_products_raw') }}`,
-          expectedColumns: ['unit_price'],
-          hints: ['The macro argument represents SQL text, not a row value.', 'Emit the column expression inside {{ }}.', 'Cast before division to preserve precision.']
+    order_item_id,
+    {{ revenue_after_discount('quantity', 'unit_price', 'discount_pct') }} as net_item_amount
+from {{ ref('stg_order_items') }}`,
+          expectedColumns: ['order_item_id', 'net_item_amount'],
+          hints: ['Macro arguments represent SQL expressions, not row values.', 'Emit each argument inside {{ }}.', 'Keep the business calculation small enough to audit in compiled SQL.']
         },
         quiz: {
           question: 'When is a model preferable to a macro?',
@@ -577,15 +652,15 @@ from {{ ref('stg_products_raw') }}`,
       {
         id: 'm05-l03',
         number: '5.3',
-        title: 'Lab: Adapter Dispatch for Date Differences',
+        title: 'Lab: Adapter Dispatch for Return Timing',
         minutes: 60,
         lab: true,
         engine: 'Cross-database',
-        summary: 'Implement a days_between macro for DuckDB, PostgreSQL, and MySQL using adapter dispatch and prove equivalent results.',
+        summary: 'Implement a days_between macro for the DuckDB and PostgreSQL analytical targets and prove equivalent return-timing results.',
         objectives: ['Create default and adapter-specific macro implementations', 'Call adapter.dispatch safely', 'Test semantic equivalence across targets'],
         explanation: [
-          'Delivery duration is conceptually identical across Northstar warehouses, but date-difference syntax is not. The public days_between macro delegates to a namespaced implementation chosen by the active adapter. This keeps models readable and confines dialect logic to one reviewed location.',
-          'Equivalence requires fixtures with same-day, multi-day, month-boundary, and null timestamps. Define whether partial days truncate and whether the end is exclusive before coding; identical column names with subtly different meanings are more dangerous than a compile failure.'
+          'Time-to-return is conceptually identical across the DuckDB and PostgreSQL analytical targets, but date-difference syntax is not. The public days_between macro delegates to a namespaced implementation chosen by the active adapter. This keeps models readable and confines dialect logic to one reviewed location.',
+          'Join stg_returns through stg_order_items to stg_orders, then test fixtures with same-day, multi-day, month-boundary, and null timestamps. Define whether partial days truncate before coding; identical column names with subtly different meanings are more dangerous than a compile failure.'
         ],
         codeExample: {
           title: 'Dispatch a portable date difference',
@@ -602,28 +677,28 @@ from {{ ref('stg_products_raw') }}`,
 
 {% macro postgres__days_between(start_expression, end_expression) %}
   (cast({{ end_expression }} as date) - cast({{ start_expression }} as date))
-{% endmacro %}
-
-{% macro mysql__days_between(start_expression, end_expression) %}
-  timestampdiff(day, {{ start_expression }}, {{ end_expression }})
 {% endmacro %}`
         },
         exercise: {
-          prompt: 'Use days_between to calculate delivery_days and return only delivered shipments with non-negative durations.',
+          prompt: 'Join returns to their orders, calculate days_to_return with days_between, and keep only non-negative completed return events.',
           starterSql: sql`select
-    shipment_id,
-    {{ days_between('___', '___') }} as delivery_days
-from {{ ref('stg_shipments') }}
-where -- delivered
+    r.return_id,
+    {{ days_between('___', '___') }} as days_to_return
+from {{ ref('stg_returns') }} r
+join {{ ref('stg_order_items') }} i using (order_item_id)
+join {{ ref('stg_orders') }} o using (order_id)
+where -- completed
   and -- non-negative`,
           solutionSql: sql`select
-    shipment_id,
-    {{ days_between('shipped_at', 'delivered_at') }} as delivery_days
-from {{ ref('stg_shipments') }}
-where delivered_at is not null
-  and {{ days_between('shipped_at', 'delivered_at') }} >= 0`,
-          expectedColumns: ['shipment_id', 'delivery_days'],
-          hints: ['Pass SQL expressions as quoted macro arguments.', 'A delivered row has a non-null delivered_at.', 'Reuse the macro in both projection and predicate.']
+    r.return_id,
+    {{ days_between('o.ordered_at', 'r.returned_at') }} as days_to_return
+from {{ ref('stg_returns') }} r
+join {{ ref('stg_order_items') }} i using (order_item_id)
+join {{ ref('stg_orders') }} o using (order_id)
+where r.return_status = 'completed'
+  and {{ days_between('o.ordered_at', 'r.returned_at') }} >= 0`,
+          expectedColumns: ['return_id', 'days_to_return'],
+          hints: ['Pass qualified SQL expressions as quoted macro arguments.', 'Join through the line item to reach its order.', 'Reuse the macro in both projection and predicate.']
         },
         quiz: {
           question: 'What is adapter dispatch designed to isolate?',
@@ -718,20 +793,20 @@ select * from {{ ref('int_orders_enriched') }}`
 select
     order_id,
     order_status,
-    net_order_amount
-from analytics.fct_orders
+    net_revenue
+from {{ ref('fct_orders') }}
 where -- customer
   and -- date range`,
           solutionSql: sql`explain (analyze, buffers)
 select
     order_id,
     order_status,
-    net_order_amount
-from analytics.fct_orders
-where customer_id = 1042
-  and ordered_at >= timestamp '2026-01-01'
-  and ordered_at < timestamp '2026-02-01'`,
-          expectedColumns: ['order_id', 'order_status', 'net_order_amount'],
+    net_revenue
+from {{ ref('fct_orders') }}
+where customer_id = 'C001'
+  and ordered_at >= timestamp '2025-01-01'
+  and ordered_at < timestamp '2025-02-01'`,
+          expectedColumns: ['order_id', 'order_status', 'net_revenue'],
           hints: ['Use ANALYZE to execute and time the query.', 'Use a half-open time interval.', 'Filter on the leading index column and then timestamp.']
         },
         quiz: {
@@ -748,11 +823,11 @@ where customer_id = 1042
         minutes: 32,
         lab: false,
         engine: 'Cross-database',
-        summary: 'Contrast row-store indexes, DuckDB columnar scans, and MySQL access paths while preserving logical model contracts.',
+        summary: 'Contrast PostgreSQL row-store indexes with DuckDB columnar scans while preserving one logical model contract.',
         objectives: ['Relate engine architecture to model design', 'Avoid cargo-cult configuration', 'Keep engine optimizations behind stable model outputs'],
         explanation: [
-          'DuckDB is an in-process analytical column store and often excels at scanning Parquet or local tables without manual indexes. PostgreSQL and MySQL are row-oriented systems where indexing, statistics, and table maintenance influence analytical queries. The same dbt model contract can therefore require different physical tuning.',
-          'Use target-aware configurations sparingly and document why they exist. A logical fct_orders model should expose the same grain and fields everywhere, even if PostgreSQL adds an index and MySQL uses a different post-hook. Cross-engine parity concerns data meaning first, performance second.'
+          'DuckDB is an in-process analytical column store and often excels at scanning local analytical tables without manual indexes. PostgreSQL is a row-oriented server where indexing, statistics, and table maintenance influence analytical queries. The same dbt model contract can therefore require different physical tuning.',
+          'Use target-aware configurations sparingly and document why they exist. A logical fct_orders model should expose the same grain and fields on DuckDB and PostgreSQL even if PostgreSQL adds an index. Cross-target parity concerns data meaning first, performance second.'
         ],
         codeExample: {
           title: 'Keep target-specific behavior explicit',
@@ -765,29 +840,29 @@ select
     order_id,
     customer_id,
     ordered_at,
-    net_order_amount
+    net_revenue
 from {{ ref('int_orders_enriched') }}`
         },
         exercise: {
-          prompt: 'Create a query that represents the same selective workload on every engine: delivered orders for one customer in June.',
+          prompt: 'Create a query that represents the same selective workload on both dbt targets: fulfilled orders for one customer in January.',
           starterSql: sql`select
     -- stable contract
 from {{ ref('fct_orders') }}
 where customer_id = -- value
-  and order_status = -- value
+  and -- fulfilled predicate
   and ordered_at >= -- start
   and ordered_at < -- end`,
           solutionSql: sql`select
     order_id,
     customer_id,
     ordered_at,
-    net_order_amount
+    net_revenue
 from {{ ref('fct_orders') }}
-where customer_id = 1042
-  and order_status = 'delivered'
-  and ordered_at >= cast('2026-06-01' as timestamp)
-  and ordered_at < cast('2026-07-01' as timestamp)`,
-          expectedColumns: ['order_id', 'customer_id', 'ordered_at', 'net_order_amount'],
+where customer_id = 'C001'
+  and is_fulfilled
+  and ordered_at >= cast('2025-01-01' as timestamp)
+  and ordered_at < cast('2025-02-01' as timestamp)`,
+          expectedColumns: ['order_id', 'customer_id', 'ordered_at', 'net_revenue'],
           hints: ['Keep the selected columns identical.', 'Use a half-open month boundary.', 'Tune the physical relation separately on each target.']
         },
         quiz: {
@@ -817,7 +892,7 @@ where customer_id = 1042
           code: sql`select
     customer_id,
     count(*) as order_count,
-    sum(net_order_amount) as lifetime_value
+    sum(net_revenue) as lifetime_value
 from {{ ref('fct_orders_benchmark') }}
 group by customer_id
 order by lifetime_value desc
@@ -828,24 +903,24 @@ limit 100`
           starterSql: sql`select
     -- relation label,
     count(*) as row_count,
-    sum(net_order_amount) as amount_checksum
+    sum(net_revenue) as amount_checksum
 from {{ ref('___') }}
 union all
 select
     -- relation label,
     count(*),
-    sum(net_order_amount)
+    sum(net_revenue)
 from {{ ref('___') }}`,
           solutionSql: sql`select
     'view' as relation_type,
     count(*) as row_count,
-    sum(net_order_amount) as amount_checksum
+    sum(net_revenue) as amount_checksum
 from {{ ref('fct_orders_view') }}
 union all
 select
     'table' as relation_type,
     count(*) as row_count,
-    sum(net_order_amount) as amount_checksum
+    sum(net_revenue) as amount_checksum
 from {{ ref('fct_orders_table') }}`,
           expectedColumns: ['relation_type', 'row_count', 'amount_checksum'],
           hints: ['Compare both cardinality and a business-value checksum.', 'UNION ALL preserves both result rows.', 'Only benchmark performance after equivalence passes.']
@@ -1046,18 +1121,18 @@ join {{ ref('stg_products') }} as p
           filename: 'models/intermediate/int_customers_with_region.sql',
           code: sql`select
     c.customer_id,
-    c.country_code,
-    coalesce(r.region_name, 'Unknown') as region_name
+    c.country,
+    coalesce(r.reporting_region, 'Unknown') as reporting_region
 from {{ ref('stg_customers') }} as c
 left join {{ ref('country_regions') }} as r
-  on c.country_code = r.country_code`
+  on c.country = r.country_code`
         },
         exercise: {
           prompt: 'Create a payment_method_groups seed and aggregate successful staged payments by its reporting group.',
           starterSql: sql`select
     -- reporting group,
     count(*) as payment_count,
-    sum(p.amount) as paid_amount
+    sum(p.payment_amount) as paid_amount
 from {{ ref('stg_payments') }} as p
 left join {{ ref('payment_method_groups') }} as g
   on -- key
@@ -1066,11 +1141,11 @@ group by -- reporting group`,
           solutionSql: sql`select
     coalesce(g.reporting_group, 'Other') as reporting_group,
     count(*) as payment_count,
-    sum(p.amount) as paid_amount
+    sum(p.payment_amount) as paid_amount
 from {{ ref('stg_payments') }} as p
 left join {{ ref('payment_method_groups') }} as g
   on p.payment_method = g.payment_method
-where p.payment_status = 'success'
+where p.payment_status = 'captured'
 group by coalesce(g.reporting_group, 'Other')`,
           expectedColumns: ['reporting_group', 'payment_count', 'paid_amount'],
           hints: ['The seed needs payment_method and reporting_group columns.', 'Run dbt seed before selecting the model.', 'Coalesce unmatched methods so they remain visible.']
@@ -1232,7 +1307,7 @@ from ranked
 where version_rank = 1`
         },
         exercise: {
-          prompt: 'Deduplicate customer CDC rows, preferring the latest updated_at and then the highest ingestion_sequence.',
+          prompt: 'Deduplicate order CDC rows, preferring the latest updated_at and then the latest _loaded_at timestamp.',
           starterSql: sql`with ranked as (
     select
         *,
@@ -1240,7 +1315,7 @@ where version_rank = 1`
             partition by -- key
             order by -- tie breakers
         ) as row_num
-    from {{ source('northstar_raw', 'customers') }}
+    from {{ source('northstar_raw', 'orders') }}
 )
 select -- fields
 from ranked
@@ -1249,15 +1324,15 @@ where -- winner`,
     select
         *,
         row_number() over (
-            partition by customer_id
-            order by updated_at desc, ingestion_sequence desc
+            partition by order_id
+            order by updated_at desc, _loaded_at desc
         ) as row_num
-    from {{ source('northstar_raw', 'customers') }}
+    from {{ source('northstar_raw', 'orders') }}
 )
-select customer_id, email, country_code, updated_at
+select order_id, customer_id, order_status, updated_at
 from ranked
 where row_num = 1`,
-          expectedColumns: ['customer_id', 'email', 'country_code', 'updated_at'],
+          expectedColumns: ['order_id', 'customer_id', 'order_status', 'updated_at'],
           hints: ['Partition by the entity business key.', 'Sort both tie breakers descending.', 'Filter row_num after the window is calculated.']
         },
         quiz: {
@@ -1270,51 +1345,52 @@ where row_num = 1`,
       {
         id: 'm03-l04',
         number: '3.4',
-        title: 'Lab: Cross-Database Staging',
+        title: 'Lab: Cross-Database Returns Staging',
         minutes: 55,
         lab: true,
         engine: 'Cross-database',
-        summary: 'Adapt staging SQL for DuckDB, PostgreSQL, and MySQL while keeping the model contract stable.',
+        summary: 'Keep the returns staging contract stable across DuckDB and PostgreSQL while MySQL remains the upstream extraction source.',
         objectives: ['Identify SQL dialect differences', 'Use dbt abstractions where practical', 'Verify equivalent output schemas across adapters'],
         explanation: [
-          'Portable models avoid unnecessary adapter-specific syntax, but warehouses differ in date arithmetic, boolean representation, JSON functions, and column exclusion. Northstar keeps the output contract fixed while dispatching only the expressions that genuinely vary.',
-          'Start with ANSI-style casts, CASE, joins, and window functions. When a dialect difference remains, hide it behind a macro and test outputs on every supported target. Portability is a verified behavior, not an assumption based on SQL looking generic.'
+          'Portable models avoid unnecessary adapter-specific syntax, but analytical warehouses still differ in date arithmetic, boolean representation, and column exclusion. Northstar keeps the output contract fixed across DuckDB and PostgreSQL while MySQL supplies the same bounded source extract.',
+          'Start with ANSI-style casts, CASE, joins, and window functions. When a target difference remains, hide it behind a narrow macro and compare output schemas and checksums on both targets. Portability is a verified behavior, not an assumption based on SQL looking generic.'
         ],
         codeExample: {
           title: 'A portable active flag',
           language: 'sql',
-          filename: 'models/staging/stg_products.sql',
+          filename: 'models/staging/stg_returns.sql',
           code: sql`select
-    product_id,
-    product_name,
+    cast(return_id as varchar) as return_id,
+    cast(order_item_id as varchar) as order_item_id,
+    cast(return_date as date) as returned_at,
     case
-        when lower(status) = 'active' then 1
+        when lower(return_status) = 'completed' then 1
         else 0
-    end as is_active_int
-from {{ source('northstar_raw', 'products') }}`
+    end as is_completed_return
+from {{ commerce_source('returns') }}`
         },
         exercise: {
-          prompt: 'Write a portable staged shipments query that derives delivered_at and an integer delivered flag without database-specific functions.',
+          prompt: 'Write a portable returns staging query that casts the event date and derives an integer completed flag without database-specific functions.',
           starterSql: sql`select
-    shipment_id,
-    order_id,
-    cast(delivered_ts as timestamp) as delivered_at,
+    cast(return_id as varchar) as return_id,
+    cast(order_item_id as varchar) as order_item_id,
+    cast(return_date as date) as returned_at,
     case
         when -- condition then -- value
         else -- value
-    end as is_delivered_int
-from {{ source('northstar_raw', 'shipments') }}`,
+    end as is_completed_return
+from {{ commerce_source('returns') }}`,
           solutionSql: sql`select
-    shipment_id,
-    order_id,
-    cast(delivered_ts as timestamp) as delivered_at,
+    cast(return_id as varchar) as return_id,
+    cast(order_item_id as varchar) as order_item_id,
+    cast(return_date as date) as returned_at,
     case
-        when delivered_ts is not null then 1
+        when lower(trim(return_status)) = 'completed' then 1
         else 0
-    end as is_delivered_int
-from {{ source('northstar_raw', 'shipments') }}`,
-          expectedColumns: ['shipment_id', 'order_id', 'delivered_at', 'is_delivered_int'],
-          hints: ['CASE is portable across all three engines.', 'Use nullness rather than a vendor boolean cast.', 'Keep the aliases identical on every target.']
+    end as is_completed_return
+from {{ commerce_source('returns') }}`,
+          expectedColumns: ['return_id', 'order_item_id', 'returned_at', 'is_completed_return'],
+          hints: ['CASE is portable across both dbt targets.', 'Normalize status before comparing it.', 'Keep the aliases identical on DuckDB and PostgreSQL.']
         },
         quiz: {
           question: 'What is the safest response to a necessary dialect difference?',
@@ -1392,60 +1468,62 @@ where processed_at >= (select max(processed_at) from {{ this }})
       {
         id: 'm07-l02',
         number: '7.2',
-        title: 'Lab: Build a Merge-Based Order Fact',
+        title: 'Lab: Build Incremental Daily Sales',
         minutes: 68,
         lab: true,
         engine: 'PostgreSQL',
-        summary: 'Implement an order fact that updates changed orders, inserts new ones, and reconciles an incremental build with a full rebuild.',
-        objectives: ['Implement a merge-capable incremental fact', 'Test updates and inserts', 'Compare incremental and full-refresh checksums'],
+        summary: 'Implement the runnable daily-sales incremental model at date-currency grain and reconcile it with a full rebuild.',
+        objectives: ['Implement a composite incremental key', 'Reprocess changing daily partitions', 'Compare incremental and full-refresh checksums'],
         explanation: [
-          'Orders can change from pending to paid to shipped, so append-only behavior is incorrect. Configure order_id as the unique key and select a rolling window of updated records. The adapter materialization then replaces matching target rows and inserts unseen keys.',
-          'The lab mutates source statuses and adds orders after the first build. Validate both cases, then build the same logic into a scratch full-refresh target and compare row count, key count, and financial checksum. Incremental performance is valuable only when it converges to the full model truth.'
+          'Daily sales can change when an order status, return, or late payment revises a prior date. Configure order_date plus currency as the composite key and use delete+insert so selected daily partitions are replaced atomically instead of appended twice.',
+          'The lab changes a fulfilled order inside the lookback and adds a new day after the first build. Validate both cases, then run a full refresh and compare date-currency row count, unique key count, and net-revenue checksum. Incremental performance is valuable only when it converges to the full model truth.'
         ],
         codeExample: {
-          title: 'Incremental order fact configuration',
+          title: 'Incremental daily-sales configuration',
           language: 'sql',
-          filename: 'models/marts/fct_orders.sql',
+          filename: 'models/marts/fct_daily_sales_incremental.sql',
           code: sql`{{ config(
     materialized='incremental',
-    unique_key='order_id',
-    incremental_strategy='merge',
+    unique_key=['order_date', 'currency'],
+    incremental_strategy='delete+insert',
     on_schema_change='fail'
 ) }}
 
 select
-    order_id,
-    customer_id,
-    order_status,
-    net_order_amount,
-    updated_at
-from {{ ref('int_orders_enriched') }}`
+    order_date,
+    currency,
+    count(*) as orders,
+    sum(net_revenue) as net_revenue,
+    current_timestamp as dbt_loaded_at
+from {{ ref('fct_orders') }}
+where is_fulfilled
+group by 1, 2`
         },
         exercise: {
           prompt: 'Add a three-day lookback filter and a non-null fallback for an empty existing target.',
           starterSql: sql`{% if is_incremental() %}
-where updated_at >= (
+and order_date >= (
     select -- safe maximum with lookback
     from {{ this }}
 )
 {% endif %}`,
           solutionSql: sql`{% if is_incremental() %}
-where updated_at >= (
+and order_date >= (
     select coalesce(
-        max(updated_at) - interval '3 day',
-        cast('1900-01-01' as timestamp)
+        max(order_date) - interval '3 day',
+        cast('1900-01-01' as date)
     )
     from {{ this }}
 )
 {% endif %}`,
-          expectedColumns: ['order_id', 'customer_id', 'order_status', 'net_order_amount', 'updated_at'],
-          hints: ['Subtract the lookback from max(updated_at).', 'max is null for an empty relation.', 'Coalesce to a timestamp old enough to include all records.']
+          expectedColumns: ['order_date', 'currency', 'orders', 'net_revenue', 'dbt_loaded_at'],
+          hints: ['Subtract the lookback from max(order_date).', 'max is null for an empty relation.', 'Coalesce to a date old enough to include all records.']
         },
         quiz: {
-          question: 'Why is append-only inappropriate for mutable orders?',
-          options: ['It cannot insert new orders', 'It creates another row for each changed version instead of updating order grain', 'It always drops the table', 'It requires no timestamp'],
+          question: 'Why is append-only inappropriate for a mutable date-currency aggregate?',
+          options: ['It cannot insert new days', 'It can add another row for a changed date-currency key instead of replacing that partition', 'It always drops the table', 'It requires no timestamp'],
           answerIndex: 1,
-          explanation: 'An order-grain fact expects one current row per order, so changed keys must update or replace existing rows.'
+          explanation: 'The aggregate expects one current row per date and currency, so selected historical partitions must be replaced rather than duplicated.'
         }
       },
       {
@@ -1502,29 +1580,29 @@ from {{ source('northstar_raw', 'payments') }}`,
         minutes: 70,
         lab: true,
         engine: 'DuckDB',
-        summary: 'Detect intentionally missed late payments, backfill a bounded period, and document a safe full-refresh recovery runbook.',
+        summary: 'Detect an intentionally missed late order change, backfill a bounded date range, and document a safe full-refresh recovery runbook.',
         objectives: ['Write source-to-target reconciliation checks', 'Perform a bounded backfill', 'Define a production-safe recovery sequence'],
         explanation: [
-          'The fixture includes a payment loaded today with a processed_at value ten days old, beyond the current three-day window. Aggregate source and target by processing date to identify the earliest divergence. Reconciliation should compare counts and sums, since one can match while the other does not.',
+          'The recovery scenario changes an older fulfilled order outside the current three-day window. Aggregate fct_orders and the incremental daily target by order date and currency to identify the earliest divergence. Reconciliation should compare counts and sums, since one can match while the other does not.',
           'For recovery, widen the predicate through a controlled variable or run a full refresh in an isolated schema before swapping. Estimate runtime, preserve the prior relation, communicate freshness impact, and validate checksums before promotion. A bare production full refresh is a command, not a runbook.'
         ],
         codeExample: {
-          title: 'Daily reconciliation by independent paths',
+          title: 'Daily-sales reconciliation by independent paths',
           language: 'sql',
-          filename: 'tests/reconcile_payment_fact.sql',
+          filename: 'tests/reconcile_daily_sales_incremental.sql',
           code: sql`with source_daily as (
-    select cast(processed_at as date) as payment_date,
-           count(*) as source_count, sum(amount) as source_amount
-    from {{ ref('stg_payments') }}
-    group by cast(processed_at as date)
+    select order_date, currency,
+           count(*) as source_count, sum(net_revenue) as source_amount
+    from {{ ref('fct_orders') }}
+    where is_fulfilled
+    group by order_date, currency
 ), target_daily as (
-    select payment_date, count(*) as target_count, sum(amount) as target_amount
-    from {{ ref('fct_payments') }}
-    group by payment_date
+    select order_date, currency, orders as target_count, net_revenue as target_amount
+    from {{ ref('fct_daily_sales_incremental') }}
 )
 select *
 from source_daily s
-left join target_daily t using (payment_date)
+left join target_daily t using (order_date, currency)
 where s.source_count <> coalesce(t.target_count, 0)
    or s.source_amount <> coalesce(t.target_amount, 0)`
         },
@@ -1532,19 +1610,19 @@ where s.source_count <> coalesce(t.target_count, 0)
           prompt: 'Parameterize the incremental lookback with var("lookback_days", 3) so an operator can run a bounded ten-day recovery.',
           starterSql: sql`{% set lookback_days = var('___', ___) %}
 {% if is_incremental() %}
-where processed_at >= (
-    select max(processed_at) - -- parameterized interval
+and order_date >= (
+    select max(order_date) - -- parameterized interval
     from {{ this }}
 )
 {% endif %}`,
           solutionSql: sql`{% set lookback_days = var('lookback_days', 3) %}
 {% if is_incremental() %}
-where processed_at >= (
-    select max(processed_at) - (interval '1 day' * {{ lookback_days }})
+and order_date >= (
+    select max(order_date) - (interval '1 day' * {{ lookback_days }})
     from {{ this }}
 )
 {% endif %}`,
-          expectedColumns: ['payment_id', 'order_id', 'amount', 'processed_at'],
+          expectedColumns: ['order_date', 'currency', 'orders', 'net_revenue', 'dbt_loaded_at'],
           hints: ['Give the variable a safe default.', 'Multiply a one-day interval by the integer.', 'The recovery invocation can pass --vars {lookback_days: 10}.']
         },
         quiz: {
@@ -1577,37 +1655,42 @@ where processed_at >= (
           'The timestamp strategy is preferred when updated_at is reliable because new source columns do not require expanding check_cols. The check strategy compares selected values and is useful when no dependable change timestamp exists, but every tracked business field must be maintained intentionally.'
         ],
         codeExample: {
-          title: 'Timestamp-based customer snapshot',
-          language: 'sql',
-          filename: 'snapshots/customers_snapshot.yml',
-          code: sql`snapshots:
-  - name: customers_snapshot
-    relation: source('northstar_raw', 'customers')
-    config:
-      schema: snapshots
-      unique_key: customer_id
-      strategy: timestamp
-      updated_at: updated_at`
+          title: 'The runnable check-based customer snapshot',
+          language: 'jinja',
+          filename: 'snapshots/snap_customers.sql',
+          code: sql`{% snapshot snap_customers %}
+{{
+    config(
+      target_schema='snapshots',
+      unique_key='customer_id',
+      strategy='check',
+      check_cols=['customer_name', 'email', 'country', 'region', 'marketing_opt_in']
+    )
+}}
+select * from {{ ref('stg_customers') }}
+{% endsnapshot %}`
         },
         exercise: {
-          prompt: 'Configure a product snapshot using the check strategy for name, category, price, and status.',
-          starterSql: sql`snapshots:
-  - name: products_snapshot
-    relation: source('northstar_raw', 'products')
-    config:
-      schema: snapshots
-      unique_key: ___
-      strategy: ___
-      check_cols: [___]`,
-          solutionSql: sql`snapshots:
-  - name: products_snapshot
-    relation: source('northstar_raw', 'products')
-    config:
-      schema: snapshots
-      unique_key: product_id
-      strategy: check
-      check_cols: [product_name, category, price_cents, status]`,
-          expectedColumns: ['product_id', 'product_name', 'category', 'price_cents', 'status'],
+          prompt: 'Configure a product snapshot using the check strategy for product name, category, list price, and active status.',
+          starterSql: sql`{% snapshot snap_products %}
+{{ config(
+    target_schema='snapshots',
+    unique_key='___',
+    strategy='___',
+    check_cols=[___]
+) }}
+select * from {{ ref('stg_products') }}
+{% endsnapshot %}`,
+          solutionSql: sql`{% snapshot snap_products %}
+{{ config(
+    target_schema='snapshots',
+    unique_key='product_id',
+    strategy='check',
+    check_cols=['product_name', 'category', 'list_price', 'is_active']
+) }}
+select * from {{ ref('stg_products') }}
+{% endsnapshot %}`,
+          expectedColumns: ['product_id', 'product_name', 'category', 'list_price', 'is_active'],
           hints: ['The stable entity key is product_id.', 'Use strategy: check when no reliable updated_at exists.', 'List every business attribute whose change needs history.']
         },
         quiz: {
@@ -1637,10 +1720,10 @@ where processed_at >= (
           code: sql`select
     o.order_id,
     o.ordered_at,
-    c.customer_tier,
-    c.country_code
+    c.region,
+    c.country
 from {{ ref('stg_orders') }} o
-join {{ ref('customers_snapshot') }} c
+join {{ ref('snap_customers') }} c
   on o.customer_id = c.customer_id
  and o.ordered_at >= c.dbt_valid_from
  and (o.ordered_at < c.dbt_valid_to or c.dbt_valid_to is null)`
@@ -1649,19 +1732,19 @@ join {{ ref('customers_snapshot') }} c
           prompt: 'Return the current version of each customer with a stable current-record flag.',
           starterSql: sql`select
     customer_id,
-    customer_tier,
-    country_code,
+    region,
+    country,
     -- flag
-from {{ ref('customers_snapshot') }}
+from {{ ref('snap_customers') }}
 where -- current`,
           solutionSql: sql`select
     customer_id,
-    customer_tier,
-    country_code,
+    region,
+    country,
     1 as is_current
-from {{ ref('customers_snapshot') }}
+from {{ ref('snap_customers') }}
 where dbt_valid_to is null`,
-          expectedColumns: ['customer_id', 'customer_tier', 'country_code', 'is_current'],
+          expectedColumns: ['customer_id', 'region', 'country', 'is_current'],
           hints: ['The open-ended version has no valid-to boundary.', 'Filter before exposing a simple flag.', 'The output returns one row per customer if source keys are sound.']
         },
         quiz: {
@@ -1681,52 +1764,52 @@ where dbt_valid_to is null`,
         summary: 'Run repeated customer snapshots, mutate realistic source attributes, and produce both current and point-in-time dimensions.',
         objectives: ['Execute and inspect snapshot versions', 'Build a current customer dimension', 'Attribute historical orders correctly'],
         explanation: [
-          'Run the customer snapshot, change one customer from Bronze to Gold and another from US to CA, advance updated_at, and run it again. Verify that old versions close and new versions open without changing customers whose tracked state stayed constant.',
-          'Build dim_customers_current for operational reporting and int_orders_customer_history for historical attribution. Compare a current-country revenue report with an order-time-country report; both may be valid, but the metric definition must say which question it answers.'
+          'Run snap_customers, change one customer region and another customer country, then run it again. Verify that old versions close and new versions open without changing customers whose tracked state stayed constant.',
+          'Build a current-customer query for operational reporting and a point-in-time order attribution for historical analysis. Compare current-region revenue with order-time-region revenue; both may be valid, but the metric definition must say which question it answers.'
         ],
         codeExample: {
-          title: 'Current customer dimension from snapshot history',
+          title: 'Current customer state from snapshot history',
           language: 'sql',
-          filename: 'models/marts/dim_customers_current.sql',
+          filename: 'analyses/current_customer_history.sql',
           code: sql`{{ config(materialized='table') }}
 
 select
     customer_id,
     customer_name,
-    customer_tier,
-    country_code,
+    region,
+    country,
     dbt_valid_from as current_since
-from {{ ref('customers_snapshot') }}
+from {{ ref('snap_customers') }}
 where dbt_valid_to is null`
         },
         exercise: {
-          prompt: 'Aggregate net order revenue by the customer tier valid when each order occurred.',
+          prompt: 'Aggregate net order revenue by the customer region valid when each order occurred.',
           starterSql: sql`select
-    -- historical tier,
+    -- historical region,
     count(*) as order_count,
-    sum(o.net_order_amount) as net_revenue
+    sum(o.net_revenue) as net_revenue
 from {{ ref('fct_orders') }} o
-join {{ ref('customers_snapshot') }} c
+join {{ ref('snap_customers') }} c
   on -- entity key
  and -- lower validity bound
  and -- upper validity bound
-group by -- tier`,
+group by -- region`,
           solutionSql: sql`select
-    c.customer_tier,
+    c.region,
     count(*) as order_count,
-    sum(o.net_order_amount) as net_revenue
+    sum(o.net_revenue) as net_revenue
 from {{ ref('fct_orders') }} o
-join {{ ref('customers_snapshot') }} c
+join {{ ref('snap_customers') }} c
   on o.customer_id = c.customer_id
  and o.ordered_at >= c.dbt_valid_from
  and (o.ordered_at < c.dbt_valid_to or c.dbt_valid_to is null)
-group by c.customer_tier`,
-          expectedColumns: ['customer_tier', 'order_count', 'net_revenue'],
-          hints: ['Join on both customer key and time.', 'Use the half-open validity interval.', 'Group by the historical tier, not the current dimension.']
+group by c.region`,
+          expectedColumns: ['region', 'order_count', 'net_revenue'],
+          hints: ['Join on both customer key and time.', 'Use the half-open validity interval.', 'Group by the historical region, not the current row.']
         },
         quiz: {
           question: 'Which report requires a point-in-time customer join?',
-          options: ['Current customer contact list', 'Revenue by tier as classified on order date', 'Count of current Gold customers', 'Latest customer country'],
+          options: ['Current customer contact list', 'Revenue by region as classified on order date', 'Count of customers in the current West region', 'Latest customer country'],
           answerIndex: 1,
           explanation: 'Historical attribution must use the dimension version valid when the fact event occurred.'
         }
@@ -1750,7 +1833,7 @@ group by c.customer_tier`,
         summary: 'Design order and order-item facts, conformed dimensions, surrogate keys, and additive measures from business processes.',
         objectives: ['Choose fact grain before measures', 'Separate facts from descriptive dimensions', 'Classify additive and non-additive metrics'],
         explanation: [
-          'A fact table represents a measurable business process at a declared grain. fct_orders contains one row per order; fct_order_items contains one row per line. Customer, product, and date dimensions provide descriptive slicing. Mixing both fact grains in one relation invites duplicated order-level values.',
+          'A fact table represents a measurable business process at a declared grain. fct_orders contains one row per order, while int_order_items_enriched preserves one row per sold line for product performance. Customer and product dimensions provide descriptive slicing. Mixing both grains in one relation invites duplicated order-level values.',
           'Revenue is additive across orders and time, while conversion rate and average order value must be recomputed from component measures. Stable surrogate keys can standardize compound natural keys and unknown members, but they do not replace testing the underlying business key.'
         ],
         codeExample: {
@@ -1758,16 +1841,15 @@ group by c.customer_tier`,
           language: 'sql',
           filename: 'models/marts/fct_orders.sql',
           code: sql`select
-    o.order_id,
-    o.customer_id,
-    cast(o.ordered_at as date) as order_date,
-    o.order_status,
-    i.gross_order_amount,
-    coalesce(p.paid_amount, 0) as paid_amount,
-    i.gross_order_amount - coalesce(o.discount_amount, 0) as net_order_amount
-from {{ ref('stg_orders') }} o
-join {{ ref('int_items_by_order') }} i using (order_id)
-left join {{ ref('int_payments_by_order') }} p using (order_id)`
+    order_id,
+    customer_id,
+    ordered_at,
+    order_status,
+    gross_order_amount,
+    captured_payment_amount,
+    net_revenue_after_returns as net_revenue,
+    net_revenue_after_returns - order_cost as gross_margin
+from {{ ref('int_orders_enriched') }}`
         },
         exercise: {
           prompt: 'Build a product dimension with a generated surrogate key and an explicit unknown-category fallback.',
@@ -1776,21 +1858,21 @@ left join {{ ref('int_payments_by_order') }} p using (order_id)`
     product_id,
     product_name,
     coalesce(category, ___) as category,
-    unit_price
+    list_price
 from {{ ref('stg_products') }}`,
           solutionSql: sql`select
     {{ dbt_utils.generate_surrogate_key(['product_id']) }} as product_key,
     product_id,
     product_name,
     coalesce(category, 'Unknown') as category,
-    unit_price
+    list_price
 from {{ ref('stg_products') }}`,
-          expectedColumns: ['product_key', 'product_id', 'product_name', 'category', 'unit_price'],
+          expectedColumns: ['product_key', 'product_id', 'product_name', 'category', 'list_price'],
           hints: ['Generate the key from stable business identifiers.', 'Pass column expressions as strings to the macro.', 'Do not leave missing categories as ambiguous nulls.']
         },
         quiz: {
           question: 'Where should unit-level product quantity usually live?',
-          options: ['dim_customers', 'fct_order_items', 'dim_date', 'A source freshness result'],
+          options: ['dim_customers', 'int_order_items_enriched at line-item grain', 'dim_products', 'A source freshness result'],
           answerIndex: 1,
           explanation: 'Quantity is a measure of the order-line business process and belongs at line-item grain.'
         }
@@ -1802,11 +1884,11 @@ from {{ ref('stg_products') }}`,
         minutes: 35,
         lab: false,
         engine: 'Cross-database',
-        summary: 'Specify measures, dimensions, entities, time grains, filters, and metric formulas so teams compute KPIs consistently.',
+        summary: 'Specify measures, dimensions, entities, time grains, filters, and formulas so teams compute KPIs consistently.',
         objectives: ['Define metric components explicitly', 'Choose an event-time dimension', 'Protect ratios from incompatible grains'],
         explanation: [
-          'Net revenue needs a measure expression, order-grain entity, order-date time dimension, currency policy, and status inclusion rule. A name alone is not a definition. Semantic-layer configuration makes those decisions reusable and exposes valid joins and groupings to downstream tools.',
-          'Ratio metrics should aggregate numerator and denominator independently before division. Average order value is sum(net_order_amount) divided by distinct completed orders, not an average of pre-aggregated daily averages. Time-zone and late-data policies are part of metric semantics.'
+          'Net revenue needs a measure expression, order-grain entity, order-date time dimension, currency policy, and fulfilled-order rule. A name alone is not a definition. Semantic-layer configuration makes those decisions reusable and exposes valid joins and groupings to downstream tools.',
+          'Ratio metrics should aggregate numerator and denominator independently before division. Average order value is sum(net_revenue) divided by distinct fulfilled orders, not an average of pre-aggregated daily averages. Time-zone and late-data policies are part of metric semantics.'
         ],
         codeExample: {
           title: 'A semantic model for order measures',
@@ -1828,21 +1910,21 @@ from {{ ref('stg_products') }}`,
     measures:
       - name: net_revenue
         agg: sum
-        expr: net_order_amount`
+        expr: net_revenue`
         },
         exercise: {
-          prompt: 'Write a SQL reference calculation for monthly average order value using delivered orders only.',
+          prompt: 'Write a SQL reference calculation for monthly average order value using fulfilled orders only.',
           starterSql: sql`select
     -- month,
     -- net revenue divided by orders
 from {{ ref('fct_orders') }}
-where -- delivered
+where -- fulfilled
 group by -- month`,
           solutionSql: sql`select
     date_trunc('month', ordered_at) as order_month,
-    sum(net_order_amount) / nullif(count(distinct order_id), 0) as average_order_value
+    sum(net_revenue) / nullif(count(distinct order_id), 0) as average_order_value
 from {{ ref('fct_orders') }}
-where order_status = 'delivered'
+where is_fulfilled
 group by date_trunc('month', ordered_at)`,
           expectedColumns: ['order_month', 'average_order_value'],
           hints: ['Filter the eligible order population first.', 'Aggregate revenue and distinct orders at the month grain.', 'Use nullif to protect division.']
@@ -1861,11 +1943,11 @@ group by date_trunc('month', ordered_at)`,
         minutes: 80,
         lab: true,
         engine: 'DuckDB',
-        summary: 'Build and validate order facts plus customer, product, and date dimensions, then answer a stakeholder revenue question.',
+        summary: 'Build and validate the runnable order fact, customer and product dimensions, then answer a regional revenue question.',
         objectives: ['Assemble a tested star schema', 'Reconcile fact measures to staging', 'Query a mart without fanout'],
         explanation: [
-          'Build dim_customers, dim_products, dim_date, fct_orders, and fct_order_items. Every model declares grain, owner, and core tests. Facts keep business keys for traceability while also exposing dimension keys used by downstream joins.',
-          'Reconcile gross line revenue to staged items and paid amount to successful payments before answering the commercial question. The final query reports monthly net revenue, distinct customers, orders, and average order value by customer region without joining order-level payment totals to line grain.'
+          'Build dim_customers, dim_products, fct_orders, fct_daily_sales, and fct_product_performance. Every model declares grain and core tests. Facts keep business keys for traceability while dimensions add reusable customer and product context.',
+          'Reconcile item revenue, refunds, captured payments, and net revenue before answering the commercial question. The final query reports monthly net revenue, distinct customers, orders, and average order value by customer region without joining order-level payment totals to line grain.'
         ],
         codeExample: {
           title: 'A safe regional monthly mart query',
@@ -1873,38 +1955,38 @@ group by date_trunc('month', ordered_at)`,
           filename: 'models/marts/rpt_monthly_region.sql',
           code: sql`select
     date_trunc('month', f.ordered_at) as order_month,
-    c.region_name,
+    c.region,
     count(distinct f.order_id) as order_count,
     count(distinct f.customer_id) as customer_count,
-    sum(f.net_order_amount) as net_revenue
+    sum(f.net_revenue) as net_revenue
 from {{ ref('fct_orders') }} f
 join {{ ref('dim_customers') }} c using (customer_id)
 where f.order_status <> 'cancelled'
-group by date_trunc('month', f.ordered_at), c.region_name`
+group by date_trunc('month', f.ordered_at), c.region`
         },
         exercise: {
           prompt: 'Extend the regional monthly result with average_order_value and revenue_per_customer while preserving its grain.',
           starterSql: sql`select
     date_trunc('month', f.ordered_at) as order_month,
-    c.region_name,
-    sum(f.net_order_amount) as net_revenue,
+    c.region,
+    sum(f.net_revenue) as net_revenue,
     -- AOV,
     -- revenue per customer
 from {{ ref('fct_orders') }} f
 join {{ ref('dim_customers') }} c using (customer_id)
 where f.order_status <> 'cancelled'
-group by date_trunc('month', f.ordered_at), c.region_name`,
+group by date_trunc('month', f.ordered_at), c.region`,
           solutionSql: sql`select
     date_trunc('month', f.ordered_at) as order_month,
-    c.region_name,
-    sum(f.net_order_amount) as net_revenue,
-    sum(f.net_order_amount) / nullif(count(distinct f.order_id), 0) as average_order_value,
-    sum(f.net_order_amount) / nullif(count(distinct f.customer_id), 0) as revenue_per_customer
+    c.region,
+    sum(f.net_revenue) as net_revenue,
+    sum(f.net_revenue) / nullif(count(distinct f.order_id), 0) as average_order_value,
+    sum(f.net_revenue) / nullif(count(distinct f.customer_id), 0) as revenue_per_customer
 from {{ ref('fct_orders') }} f
 join {{ ref('dim_customers') }} c using (customer_id)
 where f.order_status <> 'cancelled'
-group by date_trunc('month', f.ordered_at), c.region_name`,
-          expectedColumns: ['order_month', 'region_name', 'net_revenue', 'average_order_value', 'revenue_per_customer'],
+group by date_trunc('month', f.ordered_at), c.region`,
+          expectedColumns: ['order_month', 'region', 'net_revenue', 'average_order_value', 'revenue_per_customer'],
           hints: ['Keep all measures derived from order-grain rows.', 'Use distinct entities in each denominator.', 'The GROUP BY remains month plus region.']
         },
         quiz: {
@@ -1912,6 +1994,109 @@ group by date_trunc('month', f.ordered_at), c.region_name`,
           options: ['The README has a diagram', 'Fact totals reconcile to independently aggregated staged transactions', 'Every model is a table', 'All dimensions have the same row count'],
           answerIndex: 1,
           explanation: 'Independent reconciliation verifies that transformations preserved the financial measures through the graph.'
+        }
+      },
+      {
+        id: 'm09-l04',
+        number: '9.4',
+        title: 'Lab: Define a Governed Revenue Metric',
+        minutes: 60,
+        lab: true,
+        engine: 'Cross-database',
+        summary: 'Declare the entities, dimensions, measures, and metric policy that let multiple consumers query the same revenue definition.',
+        objectives: ['Map a fact model into semantic entities and dimensions', 'Define an additive revenue measure', 'Specify metric filters and time behavior'],
+        explanation: [
+          'A trustworthy fact table still leaves room for consumers to redefine a metric differently. A dbt semantic model makes the fact grain, join entities, time dimensions, categorical dimensions, and aggregations explicit so MetricFlow can build valid metric queries from shared metadata.',
+          'Northstar defines order as the primary entity, customer as a foreign entity, ordered_at as the default time dimension, and net_revenue as an additive measure. The fulfilled_revenue metric filters the eligible population through a declared dimension instead of copying a CASE expression into every dashboard.',
+          'Semantic metadata does not repair a bad fact model. Reconcile fct_orders first, then validate the metric at multiple time grains and dimensions. Document currency behavior, null handling, and whether late-arriving data can revise prior periods.'
+        ],
+        codeExample: {
+          title: 'A semantic model over the order fact',
+          language: 'yaml',
+          filename: 'models/marts/_semantic_models.yml',
+          code: sql`semantic_models:
+  - name: orders
+    model: ref('fct_orders')
+    defaults:
+      agg_time_dimension: ordered_at
+    entities:
+      - {name: order, type: primary, expr: order_id}
+      - {name: customer, type: foreign, expr: customer_id}
+    dimensions:
+      - name: ordered_at
+        type: time
+        type_params: {time_granularity: day}
+      - {name: order_status, type: categorical}
+      - {name: is_fulfilled, type: categorical}
+    measures:
+      - name: net_revenue
+        agg: sum
+        expr: net_revenue
+
+metrics:
+  - name: fulfilled_revenue
+    label: Fulfilled revenue
+    type: simple
+    type_params:
+      measure: net_revenue
+    filter: |-
+      {{ Dimension('order__is_fulfilled') }} = true`
+        },
+        exercise: {
+          prompt: 'Define an orders semantic model and a fulfilled_revenue metric using fct_orders, with order and customer entities, an ordered_at time dimension, and a fulfilled-only filter.',
+          starterSql: sql`semantic_models:
+  - name: orders
+    model: ref('___')
+    defaults:
+      agg_time_dimension: ___
+    entities:
+      # primary order and foreign customer
+    dimensions:
+      # time and fulfilled dimensions
+    measures:
+      # additive net revenue
+
+metrics:
+  - name: fulfilled_revenue
+    type: simple
+    type_params:
+      measure: ___
+    filter: |-
+      # fulfilled orders only`,
+          solutionSql: sql`semantic_models:
+  - name: orders
+    model: ref('fct_orders')
+    defaults:
+      agg_time_dimension: ordered_at
+    entities:
+      - {name: order, type: primary, expr: order_id}
+      - {name: customer, type: foreign, expr: customer_id}
+    dimensions:
+      - name: ordered_at
+        type: time
+        type_params: {time_granularity: day}
+      - {name: is_fulfilled, type: categorical}
+    measures:
+      - name: net_revenue
+        agg: sum
+        expr: net_revenue
+
+metrics:
+  - name: fulfilled_revenue
+    label: Fulfilled revenue
+    type: simple
+    type_params:
+      measure: net_revenue
+    filter: |-
+      {{ Dimension('order__is_fulfilled') }} = true`,
+          expectedColumns: ['semantic_models', 'entities', 'dimensions', 'measures', 'metrics'],
+          hints: ['The fact model supplies the primary order entity.', 'Use ordered_at as the default aggregation time dimension.', 'Keep eligibility in the shared metric filter.']
+        },
+        quiz: {
+          question: 'Why define fulfilled_revenue in semantic metadata instead of repeating dashboard SQL?',
+          options: ['It makes source extraction faster', 'It centralizes the entity, time, aggregation, and eligibility policy', 'It replaces reconciliation tests', 'It forces every model to become incremental'],
+          answerIndex: 1,
+          explanation: 'A governed metric gives consumers one reviewed definition and lets the query layer apply valid joins and dimensions consistently.'
         }
       }
     ]
@@ -1951,13 +2136,13 @@ models:
     columns:
       - name: order_id
         description: Stable operational order identifier and model grain key.
-      - name: net_order_amount
-        description: Gross item amount less order discounts, in order currency.`
+      - name: net_revenue
+        description: Order revenue after discounts, cancellations, and returns, in order currency.`
         },
         exercise: {
-          prompt: 'Write documentation metadata for dim_customers_current including its grain, owner, PII flag, and email meaning.',
+          prompt: 'Write documentation metadata for dim_customers including its grain, owner, PII flag, and email meaning.',
           starterSql: sql`models:
-  - name: dim_customers_current
+  - name: dim_customers
     description: ___
     config:
       meta:
@@ -1967,7 +2152,7 @@ models:
       - name: email
         description: ___`,
           solutionSql: sql`models:
-  - name: dim_customers_current
+  - name: dim_customers
     description: One row per customer containing the latest known descriptive attributes.
     config:
       meta:
@@ -1976,7 +2161,7 @@ models:
     columns:
       - name: email
         description: Normalized current contact email; restricted to approved operational use.`,
-          expectedColumns: ['customer_id', 'email', 'customer_tier', 'country_code'],
+          expectedColumns: ['customer_id', 'email', 'customer_segment', 'region'],
           hints: ['State “one row per customer” explicitly.', 'Use a team rather than an individual as owner.', 'Email is personally identifiable information and needs a usage note.']
         },
         quiz: {
@@ -2010,10 +2195,10 @@ models:
         enforced: true
     columns:
       - name: order_id
-        data_type: bigint
+        data_type: varchar
         constraints:
           - type: not_null
-      - name: net_order_amount
+      - name: net_revenue
         data_type: decimal(18,2)
 
 exposures:
@@ -2023,7 +2208,7 @@ exposures:
     owner: {name: Finance Analytics, email: finance-analytics@example.com}`
         },
         exercise: {
-          prompt: 'Declare an application exposure for the customer health portal that depends on dim_customers_current and fct_orders.',
+          prompt: 'Declare an application exposure for the customer health portal that depends on dim_customers and fct_orders.',
           starterSql: sql`exposures:
   - name: ___
     type: ___
@@ -2037,12 +2222,12 @@ exposures:
   - name: customer_health_portal
     type: application
     depends_on:
-      - ref('dim_customers_current')
+      - ref('dim_customers')
       - ref('fct_orders')
     owner:
       name: Customer Analytics
       email: customer-analytics@example.com`,
-          expectedColumns: ['customer_health_portal', 'dim_customers_current', 'fct_orders'],
+          expectedColumns: ['customer_health_portal', 'dim_customers', 'fct_orders'],
           hints: ['Use application as the exposure type.', 'Each dependency is a ref expression.', 'Assign a durable team owner and contact.']
         },
         quiz: {
@@ -2248,111 +2433,105 @@ echo "dbt artifacts ready"`,
   {
     id: 'capstone',
     number: 12,
-    title: 'Cross-Database Capstone',
-    description: 'Deliver a production-minded ecommerce analytics project that runs locally on DuckDB and validates on PostgreSQL or MySQL.',
-    outcomes: ['Configure multiple adapters', 'Deliver an end-to-end dbt project', 'Defend design and operations with evidence'],
+    title: 'Source-to-Warehouse Capstone',
+    description: 'Deliver a production-minded ecommerce platform with MySQL as the operational source and one shared dbt graph on DuckDB and PostgreSQL.',
+    outcomes: ['Separate ingestion from transformation', 'Validate two analytical targets', 'Defend design and operations with evidence'],
     lessons: [
       {
         id: 'm12-l01',
         number: '12.1',
-        title: 'DuckDB, PostgreSQL, and MySQL Targets',
+        title: 'Three Databases, Three Clear Roles',
         minutes: 34,
         lab: false,
         engine: 'Cross-database',
-        summary: 'Configure adapter targets, understand practical dialect boundaries, and define a cross-engine validation matrix.',
-        objectives: ['Configure three profile outputs', 'Identify adapter-specific behavior', 'Define contract and result parity checks'],
+        summary: 'Use MySQL as the OLTP extraction source and configure DuckDB plus PostgreSQL as equivalent dbt analytical targets.',
+        objectives: ['Separate source extraction from dbt transformation', 'Configure DuckDB and PostgreSQL outputs', 'Define contract and result parity checks'],
         explanation: [
-          'DuckDB gives every learner a fast local path, while PostgreSQL and MySQL introduce server credentials, schemas or databases, concurrency, indexes, and operational permissions. The model graph remains shared; target outputs and a small number of dispatched macros isolate platform details.',
-          'Cross-database validation checks compilation, output columns and types, row grain, test outcomes, and metric checksums. Exact physical plans and some numeric types differ, so define acceptable parity precisely—for example, monetary totals equal to the cent and timestamps normalized to UTC.'
+          'Northstar uses MySQL for operational transactions, then extracts six allowlisted source tables into bounded CSV files. dbt begins after that boundary. DuckDB is the zero-setup local analytical target and PostgreSQL is the production-like server target; both compile the same model graph.',
+          'Cross-target validation checks compilation, output columns and types, row grain, test outcomes, and metric checksums between DuckDB and PostgreSQL. MySQL extraction is validated for completeness and source fidelity rather than treated as a third dbt output.'
         ],
         codeExample: {
-          title: 'One profile with local and server targets',
+          title: 'One profile with two analytical targets',
           language: 'yaml',
           filename: 'profiles.yml',
-          code: sql`northstar_shop:
-  target: duckdb
+          code: sql`dbt_course:
+  target: dev
   outputs:
-    duckdb:
+    dev:
       type: duckdb
-      path: northstar.duckdb
+      path: warehouse.duckdb
+      schema: analytics
       threads: 4
     postgres:
       type: postgres
-      host: "{{ env_var('PGHOST') }}"
-      user: "{{ env_var('PGUSER') }}"
-      password: "{{ env_var('PGPASSWORD') }}"
-      dbname: northstar
+      host: "{{ env_var('DBT_POSTGRES_HOST', 'localhost') }}"
+      port: 5433
+      user: "{{ env_var('DBT_POSTGRES_USER', 'dbt_student') }}"
+      password: "{{ env_var('DBT_POSTGRES_PASSWORD') }}"
+      dbname: analytics
       schema: analytics
-      threads: 8
-    mysql:
-      type: mysql
-      server: "{{ env_var('MYSQL_HOST') }}"
-      username: "{{ env_var('MYSQL_USER') }}"
-      password: "{{ env_var('MYSQL_PASSWORD') }}"
-      schema: northstar
-      port: 3306`
+      threads: 4`
         },
         exercise: {
-          prompt: 'Write the commands that compile all targets and then build only the order mart on MySQL with its ancestors.',
-          starterSql: sql`dbt compile --target ___
-dbt compile --target ___
-dbt compile --target ___
-dbt build --target ___ --select ___`,
-          solutionSql: sql`dbt compile --target duckdb
-dbt compile --target postgres
-dbt compile --target mysql
-dbt build --target mysql --select +fct_orders`,
-          expectedColumns: ['duckdb', 'postgres', 'mysql', 'fct_orders'],
-          hints: ['Compile each named output separately.', 'Use mysql for the server build in this check.', 'A leading + selects all ancestors.']
+          prompt: 'Write the command sequence that builds the default DuckDB target, validates PostgreSQL, and keeps MySQL in the source-extraction workflow.',
+          starterSql: sql`python scripts/lab.py ___
+python scripts/lab.py ___
+python scripts/lab.py ___
+python scripts/lab.py ___`,
+          solutionSql: sql`python scripts/lab.py quickstart
+python scripts/lab.py postgres-build
+python scripts/lab.py load-mysql
+python scripts/lab.py extract-mysql`,
+          expectedColumns: ['quickstart', 'postgres-build', 'load-mysql', 'extract-mysql'],
+          hints: ['Quickstart builds the DuckDB graph.', 'PostgreSQL has its own analytical build command.', 'Loading and extracting MySQL are ingestion steps, not dbt targets.']
         },
         quiz: {
-          question: 'What is the most important cross-database parity target?',
-          options: ['Identical query-plan text', 'Identical file paths', 'Equivalent model grain and business results', 'Identical index names'],
-          answerIndex: 2,
-          explanation: 'Consumers rely on data meaning and results; physical implementations can legitimately differ by engine.'
+          question: 'What role does MySQL have in this course architecture?',
+          options: ['A third dbt target', 'The OLTP source used to practice a bounded extraction boundary', 'A replacement for DuckDB', 'A BI semantic layer'],
+          answerIndex: 1,
+          explanation: 'MySQL owns the operational source tables. The extraction workflow moves allowlisted data into the analytical path before dbt builds DuckDB or PostgreSQL.'
         }
       },
       {
         id: 'm12-l02',
         number: '12.2',
-        title: 'Lab: Port the Warehouse to MySQL',
+        title: 'Lab: MySQL Source to dbt Warehouses',
         minutes: 75,
         lab: true,
         engine: 'MySQL',
-        summary: 'Run the Northstar graph on MySQL, resolve controlled dialect failures, and compare its ecommerce checksums with DuckDB.',
-        objectives: ['Connect dbt to MySQL securely', 'Fix portability at narrow abstraction points', 'Reconcile results with DuckDB'],
+        summary: 'Load MySQL with realistic operational data, extract six allowlisted tables, build them in DuckDB, and reconcile the result.',
+        objectives: ['Operate the MySQL extraction boundary', 'Build dbt from extracted source files', 'Reconcile extracted and seeded warehouse results'],
         explanation: [
-          'Start a local MySQL service, load the same bounded source CSVs, and compile before executing. The provided branch contains date_diff and boolean syntax that works only on DuckDB. Replace those expressions through existing macros rather than forking whole models.',
-          'Run staging and marts, then compare row counts, distinct keys, null rates, and currency totals with the DuckDB target. Explain any type representation difference and prove it does not change business semantics. A passing build without parity evidence is incomplete.'
+          'Start the local MySQL service and load the deterministic six-table commerce fixture. The extraction command reads only configured tables and writes local CSV inputs; dbt then switches its source macro to those extracts and builds the same DuckDB graph.',
+          'Compare source and extracted row counts, distinct business keys, null rates, and order revenue. Then run the PostgreSQL build as a separate analytical parity check. This makes the ingestion boundary observable without pretending dbt performs extraction.'
         ],
         codeExample: {
-          title: 'MySQL date implementation behind dispatch',
-          language: 'jinja',
-          filename: 'macros/days_between.sql',
-          code: sql`{% macro mysql__days_between(start_expression, end_expression) %}
-    timestampdiff(day, {{ start_expression }}, {{ end_expression }})
-{% endmacro %}`
+          title: 'The complete source-to-warehouse path',
+          language: 'shell',
+          filename: 'scripts/lab.py',
+          code: sql`python scripts/lab.py load-mysql
+python scripts/lab.py extract-mysql
+python scripts/lab.py build-extract
+python scripts/lab.py postgres-build`
         },
         exercise: {
-          prompt: 'Write a portable checksum query for delivered order count and net revenue; round the monetary result to cents.',
-          starterSql: sql`select
-    count(distinct case when -- delivered then order id end) as delivered_order_count,
-    round(sum(case when -- delivered then -- amount else 0 end), ___)
-        as delivered_net_revenue
-from {{ ref('fct_orders') }}`,
-          solutionSql: sql`select
-    count(distinct case when order_status = 'delivered' then order_id end) as delivered_order_count,
-    round(sum(case when order_status = 'delivered' then net_order_amount else 0 end), 2)
-        as delivered_net_revenue
-from {{ ref('fct_orders') }}`,
-          expectedColumns: ['delivered_order_count', 'delivered_net_revenue'],
-          hints: ['Conditional distinct count is portable here.', 'Apply the same status filter to both measures.', 'Round only the final aggregate, to two decimal places.']
+          prompt: 'Write the safe command sequence for MySQL load, allowlisted extraction, DuckDB build from extracts, and PostgreSQL parity build.',
+          starterSql: sql`python scripts/lab.py ___
+python scripts/lab.py ___
+python scripts/lab.py ___
+python scripts/lab.py ___`,
+          solutionSql: sql`python scripts/lab.py load-mysql
+python scripts/lab.py extract-mysql
+python scripts/lab.py build-extract
+python scripts/lab.py postgres-build`,
+          expectedColumns: ['load-mysql', 'extract-mysql', 'build-extract', 'postgres-build'],
+          hints: ['Load the operational source before extracting it.', 'Build from the extracted files before comparing targets.', 'PostgreSQL validates the analytical graph, not the extraction step.']
         },
         quiz: {
-          question: 'A model fails only on MySQL because of date syntax. What is the preferred fix?',
-          options: ['Duplicate every model for MySQL', 'Use a narrowly dispatched date macro', 'Remove the date calculation', 'Skip the MySQL build'],
+          question: 'Why does the lab extract MySQL data before invoking dbt?',
+          options: ['dbt is responsible for dashboard rendering', 'The course keeps ingestion and warehouse transformation as explicit separate responsibilities', 'PostgreSQL cannot read rows', 'DuckDB requires a network server'],
           answerIndex: 1,
-          explanation: 'Dispatch contains the legitimate dialect difference while keeping one model and one output contract.'
+          explanation: 'The extraction step owns source access and bounded movement; dbt begins once those inputs are available to the analytical target.'
         }
       },
       {
@@ -2365,43 +2544,42 @@ from {{ ref('fct_orders') }}`,
         summary: 'Turn stakeholder questions into a scoped graph, quality plan, deployment design, and measurable definition of done.',
         objectives: ['Translate requirements into model grains', 'Write acceptance criteria', 'Plan failure recovery and demonstration evidence'],
         explanation: [
-          'The capstone stakeholder asks which regions and product categories drive delivered revenue, repeat purchasing, and delivery delay. Design sources, staging models, intermediate grain-aligning models, facts, dimensions, metrics, and one exposure. Each node exists to answer a requirement or protect a dependency—not to maximize model count.',
-          'Acceptance requires reproducible setup, 42-day realistic ecommerce data, two engine targets, tests at key grains, one incremental fact, one customer snapshot, documentation, lineage, and a CI command. Include reconciliation evidence and a runbook for late data, source failure, and incremental recovery.'
+          'The capstone stakeholder asks which regions and product categories drive net revenue, gross margin, return risk, payment problems, and customer health. Design sources, staging models, intermediate grain-aligning models, facts, dimensions, metrics, and documentation. Each node exists to answer a requirement or protect a dependency—not to maximize model count.',
+          'Acceptance requires reproducible setup, the deterministic six-table fixture, DuckDB and PostgreSQL builds, tests at key grains, one incremental fact, the customer snapshot, documentation, lineage, and a runbook. Include a reconciliation by currency and prove that MySQL extraction stays separate from dbt transformation.'
         ],
         codeExample: {
           title: 'Capstone graph selection for release',
           language: 'shell',
           filename: 'capstone/acceptance.sh',
-          code: sql`dbt deps
-dbt seed --full-refresh
-dbt snapshot
-dbt build --select +fct_orders+ +fct_order_items+
-dbt source freshness
-dbt docs generate`
+          code: sql`python scripts/lab.py quickstart
+python scripts/lab.py snapshot
+python scripts/lab.py test
+python scripts/lab.py docs-generate
+python scripts/lab.py postgres-build`
         },
         exercise: {
-          prompt: 'Write acceptance SQL that proves fct_orders is one row per order and has no negative net amount for delivered orders.',
+          prompt: 'Write acceptance SQL that proves fct_orders is one row per order and has no negative net revenue for fulfilled orders.',
           starterSql: sql`select
     order_id,
     count(*) as row_count,
-    min(net_order_amount) as minimum_net_amount
+    min(net_revenue) as minimum_net_revenue
 from {{ ref('fct_orders') }}
 group by order_id
-having -- duplicate or invalid delivered amount`,
+having -- duplicate or invalid fulfilled revenue`,
           solutionSql: sql`select
     order_id,
     count(*) as row_count,
-    min(net_order_amount) as minimum_net_amount
+    min(net_revenue) as minimum_net_revenue
 from {{ ref('fct_orders') }}
 group by order_id
 having count(*) <> 1
-    or min(case when order_status = 'delivered' then net_order_amount end) < 0`,
-          expectedColumns: ['order_id', 'row_count', 'minimum_net_amount'],
-          hints: ['A passing acceptance query returns zero rows.', 'Group by the declared grain key.', 'Only apply the amount rule to delivered orders.']
+    or min(case when is_fulfilled then net_revenue end) < 0`,
+          expectedColumns: ['order_id', 'row_count', 'minimum_net_revenue'],
+          hints: ['A passing acceptance query returns zero rows.', 'Group by the declared grain key.', 'Only apply the revenue rule to fulfilled orders.']
         },
         quiz: {
           question: 'Which acceptance criterion is verifiable?',
-          options: ['The project feels production-ready', 'The SQL is elegant', 'DuckDB and PostgreSQL delivered-revenue checksums match to the cent', 'There are enough models'],
+          options: ['The project feels production-ready', 'The SQL is elegant', 'DuckDB and PostgreSQL net-revenue checksums by currency match to the cent', 'There are enough models'],
           answerIndex: 2,
           explanation: 'A named cross-engine checksum with explicit tolerance can be executed and independently reviewed.'
         }
@@ -2416,37 +2594,36 @@ having count(*) <> 1
         summary: 'Complete the end-to-end capstone, demonstrate stakeholder insights, simulate a late-data incident, and present engineering evidence.',
         objectives: ['Deliver a tested multi-engine dbt graph', 'Operate an incremental recovery', 'Present lineage, metric, and performance evidence'],
         explanation: [
-          'Build the full project first on DuckDB and then on PostgreSQL or MySQL. The required output is a monthly region-category performance mart with delivered net revenue, orders, customers, repeat-customer rate, average order value, and delivery days. Trace every measure to its fact grain and document historical customer attribution.',
-          'Inject a late payment and a customer tier change, run normal jobs, explain the observed gaps, and recover through the documented procedures. Finish with a five-minute engineering review: architecture, tests, lineage, cross-engine parity, benchmark decision, CI selection, and one stakeholder finding grounded in the mart.'
+          'Build the full project first on DuckDB and then on PostgreSQL. Use the MySQL workflow only to prove the bounded source-extraction path. The required output is a monthly region performance mart with fulfilled net revenue, gross margin, refunds, orders, customers, repeat-customer rate, and payment-health indicators.',
+          'Inject a late payment and a customer region change, run normal jobs, explain the observed gaps, and recover through the documented procedures. Finish with a five-minute engineering review: architecture, tests, lineage, cross-target parity, incremental recovery, and one stakeholder finding grounded in the mart.'
         ],
         codeExample: {
-          title: 'Final stakeholder mart at month-region-category grain',
+          title: 'Final stakeholder mart at month-region grain',
           language: 'sql',
-          filename: 'models/marts/rpt_region_category_performance.sql',
+          filename: 'models/marts/rpt_monthly_region_performance.sql',
           code: sql`select
-    date_trunc('month', i.ordered_at) as order_month,
-    c.region_name,
-    p.category,
-    count(distinct i.order_id) as delivered_orders,
-    count(distinct i.customer_id) as purchasing_customers,
-    sum(i.net_line_amount) as delivered_net_revenue,
-    sum(i.net_line_amount) / nullif(count(distinct i.order_id), 0) as average_order_value,
-    avg(i.delivery_days) as average_delivery_days
-from {{ ref('fct_order_items') }} i
+    date_trunc('month', f.ordered_at) as order_month,
+    c.region,
+    count(distinct f.order_id) as fulfilled_orders,
+    count(distinct f.customer_id) as purchasing_customers,
+    sum(f.net_revenue) as net_revenue,
+    sum(f.gross_margin) as gross_margin,
+    sum(f.refund_amount) as refund_amount,
+    sum(f.has_failed_payment) as orders_with_payment_failure
+from {{ ref('fct_orders') }} f
 join {{ ref('dim_customers') }} c using (customer_id)
-join {{ ref('dim_products') }} p using (product_id)
-where i.order_status = 'delivered'
-group by date_trunc('month', i.ordered_at), c.region_name, p.category`
+where f.is_fulfilled
+group by date_trunc('month', f.ordered_at), c.region`
         },
         exercise: {
-          prompt: 'Complete the capstone with repeat_customer_rate: customers with at least two delivered orders divided by all delivered purchasing customers, calculated without line-item fanout.',
+          prompt: 'Complete the capstone with repeat_customer_rate: customers with at least two fulfilled orders divided by all fulfilled purchasing customers, calculated without line-item fanout.',
           starterSql: sql`with customer_orders as (
     select
         date_trunc('month', ordered_at) as order_month,
         customer_id,
-        count(distinct order_id) as delivered_orders
+        count(distinct order_id) as fulfilled_orders
     from {{ ref('fct_orders') }}
-    where order_status = 'delivered'
+    where is_fulfilled
     group by -- month and customer
 )
 select
@@ -2458,14 +2635,14 @@ group by order_month`,
     select
         date_trunc('month', ordered_at) as order_month,
         customer_id,
-        count(distinct order_id) as delivered_orders
+        count(distinct order_id) as fulfilled_orders
     from {{ ref('fct_orders') }}
-    where order_status = 'delivered'
+    where is_fulfilled
     group by date_trunc('month', ordered_at), customer_id
 )
 select
     order_month,
-    sum(case when delivered_orders >= 2 then 1 else 0 end)
+    sum(case when fulfilled_orders >= 2 then 1 else 0 end)
         / nullif(count(*), 0) as repeat_customer_rate
 from customer_orders
 group by order_month`,
@@ -2495,9 +2672,9 @@ const computedLabCount = courseModules.reduce(
   0
 );
 
-if (computedLessonCount !== 42 || computedLabCount !== 18) {
+if (computedLessonCount !== 44 || computedLabCount !== 20) {
   throw new Error(
-    `Course invariant failed: expected 42 lessons and 18 labs, received ${computedLessonCount} lessons and ${computedLabCount} labs.`
+    `Course invariant failed: expected 44 lessons and 20 labs, received ${computedLessonCount} lessons and ${computedLabCount} labs.`
   );
 }
 
@@ -2515,38 +2692,44 @@ export const course: Course = {
   engines: ['DuckDB', 'PostgreSQL', 'MySQL', 'Cross-database'],
   lessonCount: computedLessonCount,
   labCount: computedLabCount,
-  estimatedHours: 34,
+  estimatedHours: 36,
   narrative: 'You are the data engineer for Northstar Shop. Its operational ecommerce data is realistic, imperfect, mutable, and late-arriving. Across the course you turn raw extracts into a tested analytics platform and operate it through incidents and release gates.',
   datasets: [
     {
       name: 'customers',
-      grain: 'One current source row per customer, with CDC updates across fixture loads',
-      description: 'Names, normalized and malformed emails, country codes, acquisition channels, tiers, update timestamps, and ingestion metadata.',
-      keyColumns: ['customer_id', 'updated_at', '_loaded_at']
+      grain: 'One current source row per customer',
+      description: 'Customer names, safe .test emails, country, region, signup date, marketing consent, and update timestamp.',
+      keyColumns: ['customer_id', 'updated_at']
     },
     {
       name: 'orders',
-      grain: 'One source version per order update',
-      description: 'Forty-two days of ecommerce orders across statuses, currencies, promotions, late updates, and controlled duplicate CDC records.',
-      keyColumns: ['order_id', 'customer_id', 'order_created_at', 'updated_at']
+      grain: 'One row per order',
+      description: 'Ecommerce orders across completed, shipped, returned, cancelled, and pending states with currency and sales channel.',
+      keyColumns: ['order_id', 'customer_id', 'order_date']
     },
     {
       name: 'order_items',
       grain: 'One row per line item within an order',
-      description: 'Products, quantities, integer-cent prices, discounts, and line values suitable for grain and fanout exercises.',
-      keyColumns: ['order_id', 'line_id', 'product_id']
+      description: 'Products, quantities, decimal unit prices, discounts, and line values suitable for grain and fanout exercises.',
+      keyColumns: ['order_item_id', 'order_id', 'product_id']
     },
     {
       name: 'payments',
       grain: 'One row per payment attempt',
-      description: 'Successful, failed, refunded, duplicate, and late-arriving attempts using card, wallet, and bank transfer methods.',
-      keyColumns: ['payment_id', 'order_id', 'processed_at', '_loaded_at']
+      description: 'Captured, failed, refunded, and pending attempts using card, wallet, and bank transfer methods.',
+      keyColumns: ['payment_id', 'order_id', 'payment_date']
     },
     {
-      name: 'products_and_shipments',
-      grain: 'One row per product and one row per shipment event respectively',
-      description: 'Product catalog history plus shipping timestamps, carriers, destinations, and delivery-delay edge cases.',
-      keyColumns: ['product_id', 'shipment_id', 'order_id']
+      name: 'products',
+      grain: 'One row per product',
+      description: 'Product catalog attributes, category, unit cost, list price, and active status.',
+      keyColumns: ['product_id']
+    },
+    {
+      name: 'returns',
+      grain: 'One row per return event for an order item',
+      description: 'Return date, reason, quantity, refund amount, and processing status for revenue-after-returns analysis.',
+      keyColumns: ['return_id', 'order_item_id', 'return_date']
     }
   ],
   modules: courseModules

@@ -21,6 +21,7 @@ export default function App() {
   const [darkMode, setDarkMode] = useState(false)
 
   const selectedIndex = allLessons.findIndex((lesson) => lesson.id === selectedLesson.id)
+  const selectedModule = courseModules.find((module) => module.lessons.some((lesson) => lesson.id === selectedLesson.id)) ?? courseModules[0]
 
   function selectView(nextView: AppView) {
     setView(nextView)
@@ -73,6 +74,7 @@ export default function App() {
         <LessonWorkspace
           key={selectedLesson.id}
           lesson={selectedLesson}
+          module={selectedModule}
           lessonIndex={selectedIndex}
           totalLessons={allLessons.length}
           isComplete={progress.completedSet.has(selectedLesson.id)}

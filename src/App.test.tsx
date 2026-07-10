@@ -11,12 +11,13 @@ describe('DBT Forge learning flow', () => {
     render(<App />)
 
     expect(screen.getByRole('heading', { name: /master dbt by/i })).toBeInTheDocument()
-    expect(screen.getByText(/42 focused lessons\. 18 hands-on labs/i)).toBeInTheDocument()
+    expect(screen.getByText(/44 focused lessons\. 20 hands-on labs/i)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /continue lesson/i }))
 
     expect(screen.getByRole('heading', { name: 'ELT, Analytics Engineering, and dbt' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: /lab/i })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: /learn/i })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('heading', { name: /the transformation responsibility map/i })).toBeInTheDocument()
   })
 
   it('navigates to the searchable field guide', () => {

@@ -29,9 +29,9 @@ operational extraction source.
 
 ![DBT Forge course overview showing the curriculum path, progress, and capstone](docs/images/dbt-forge-course-overview.jpg)
 
-### Interactive lesson workbench
+### Interactive Lab and Schema explorer
 
-![DBT Forge lesson workbench with SQL editor, terminal, data preview, and lesson steps](docs/images/dbt-forge-lesson-workbench.jpg)
+![DBT Forge lesson workbench with SQL editor and live DuckDB tables, fields, keys, and relationships](docs/images/dbt-forge-lesson-workbench.jpg)
 
 ## Why DBT Forge?
 
@@ -50,12 +50,15 @@ The project combines three learning surfaces:
 
 ### At a glance
 
-- **12 modules**, **42 lessons**, and **18 lab-designated lessons**.
-- Approximately **24–34 hours** of guided learning and hands-on work.
-- Every lesson includes objectives, an explanation, a code example, an
-  exercise, three hints, a reference solution, and a four-option knowledge
+- **12 modules**, **44 lessons**, and **20 lab-designated lessons**.
+- Approximately **26–36 hours** of guided learning and hands-on work.
+- Every lesson includes objectives, a lesson-specific mental model, a visual
+  concept graph, key terms, production guidance, common failure modes, a
+  worked example, an aligned exercise, three hints, and an aligned knowledge
   check.
 - Four focused exercises execute real, read-only SQL in browser DuckDB.
+- The Lab includes a live Schema explorer for DuckDB tables, fields, types,
+  nullability, row counts, logical keys, and relationships.
 - Advanced exercises route clearly to the full dbt lab instead of simulating
   dbt behavior.
 - Progress and quiz scores persist locally in the browser.
@@ -148,16 +151,16 @@ execution boundaries.
 | 01 | Warehouse Thinking & dbt Foundations | ELT boundaries, analytics engineering, grain, keys, and a first DuckDB project | 3 | 1 |
 | 02 | Projects, Sources & `ref()` | Project anatomy, profiles, sources, selectors, DAGs, and artifacts | 4 | 2 |
 | 03 | Staging the Ecommerce Warehouse | Source-aligned staging, types, naming, deduplication, and portability | 4 | 2 |
-| 04 | Data Quality as Code | Generic, singular, relationship, threshold, and incident-oriented tests | 4 | 2 |
+| 04 | Data Quality as Code | Generic, singular, unit, relationship, threshold, and incident-oriented tests | 5 | 3 |
 | 05 | Jinja & Reusable Macros | Compile-time logic, packages, macros, and adapter dispatch | 3 | 1 |
 | 06 | Materializations & Physical Design | Views, tables, ephemerals, incrementals, and engine-aware trade-offs | 4 | 2 |
 | 07 | Incremental Models at Scale | Idempotency, unique keys, lookback windows, schema evolution, and recovery | 4 | 2 |
 | 08 | Snapshots & Slowly Changing Dimensions | Change detection, validity intervals, SCD Type 2, and point-in-time joins | 3 | 1 |
-| 09 | Marts, Facts, Dimensions & Metrics | Star schemas, fan-out control, conformed dimensions, and trusted metrics | 3 | 1 |
+| 09 | Marts, Facts, Dimensions & Metrics | Star schemas, fan-out control, semantic models, and governed metrics | 4 | 2 |
 | 10 | Documentation, Contracts & Lineage | Metadata, contracts, exposures, ownership, and generated docs | 3 | 1 |
 | 11 | Production Deployment & CI | Environments, state selection, defer, release gates, and incident recovery | 3 | 1 |
-| 12 | Cross-Database Capstone | DuckDB/PostgreSQL portability, MySQL extraction boundaries, and delivery | 4 | 2 |
-|  | **Total** |  | **42** | **18** |
+| 12 | Source-to-Warehouse Capstone | DuckDB/PostgreSQL parity, MySQL extraction boundaries, and delivery | 4 | 2 |
+|  | **Total** |  | **44** | **20** |
 
 For the practical execution order, see
 [`lab/course/COURSE.md`](lab/course/COURSE.md). The workbook uses a few extra
