@@ -1,0 +1,16 @@
+# dbt course build artifacts
+node_modules/
+dist/
+.DS_Store
+.venv/
+lab/warehouse.duckdb*
+lab/target/
+lab/logs/
+lab/dbt_packages/
+data/mysql_extracts/
+data/uci_online_retail/*.csv
+data/uci_online_retail/*.xlsx
+data/uci_online_retail/*.zip
+data/uci_online_retail/provenance.json
+__pycache__/
+*.pyc

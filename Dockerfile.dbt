@@ -1,0 +1,16 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DBT_PROFILES_DIR=/workspace/lab
+
+WORKDIR /workspace/lab
+
+COPY requirements-dbt.txt /tmp/requirements-dbt.txt
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r /tmp/requirements-dbt.txt
+
+ENTRYPOINT ["dbt"]
+CMD ["--help"]
+

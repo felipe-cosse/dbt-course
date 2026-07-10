@@ -1,0 +1,7 @@
+return_id,order_item_id,return_date,return_reason,quantity,refund_amount,return_status
+R001,I0004,2025-01-13,not_as_expected,1,99.00,completed
+R002,I0052,2025-02-16,wrong_item,1,149.00,completed
+R003,I0059,2025-02-28,changed_mind,1,149.00,processing
+R004,I0078,2025-03-22,changed_mind,1,109.00,completed
+R005,I0148,2025-05-04,changed_mind,1,69.00,completed
+R006,I0152,2025-05-12,wrong_item,1,109.00,completed

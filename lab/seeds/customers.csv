@@ -1,0 +1,17 @@
+customer_id,customer_name,email,country,region,signup_date,marketing_opt_in,updated_at
+C001,Avery Johnson,avery.johnson@example.test,United States,West,2024-01-20,true,2025-07-01 09:01:00
+C002,Sofia Ramirez,sofia.ramirez@example.test,United States,Southwest,2024-02-08,true,2025-07-01 09:02:00
+C003,Noah Williams,noah.williams@example.test,Canada,Ontario,2024-02-27,false,2025-07-01 09:03:00
+C004,Amelia Brown,amelia.brown@example.test,United Kingdom,England,2024-03-17,true,2025-07-01 09:04:00
+C005,Lucas Martin,lucas.martin@example.test,France,Ile-de-France,2024-04-05,true,2025-07-01 09:05:00
+C006,Mia Schneider,mia.schneider@example.test,Germany,Berlin,2024-04-24,false,2025-07-01 09:06:00
+C007,Oliver Wilson,oliver.wilson@example.test,Australia,New South Wales,2024-05-13,true,2025-07-01 09:07:00
+C008,Isabella Rossi,isabella.rossi@example.test,Italy,Lombardy,2024-06-01,true,2025-07-01 09:08:00
+C009,Ethan Kim,ethan.kim@example.test,South Korea,Seoul,2024-06-20,false,2025-07-01 09:09:00
+C010,Harper Davis,harper.davis@example.test,United States,Northeast,2024-07-09,true,2025-07-01 09:10:00
+C011,Leo Garcia,leo.garcia@example.test,Spain,Catalonia,2024-07-28,true,2025-07-01 09:11:00
+C012,Luna de Vries,luna.de.vries@example.test,Netherlands,North Holland,2024-08-16,false,2025-07-01 09:12:00
+C013,Mateo Silva,mateo.silva@example.test,Brazil,Sao Paulo,2024-09-04,true,2025-07-01 09:13:00
+C014,Freya Evans,freya.evans@example.test,United Kingdom,Scotland,2024-09-23,true,2025-07-01 09:14:00
+C015,Jack Thompson,jack.thompson@example.test,Canada,British Columbia,2024-10-12,false,2025-07-01 09:15:00
+C016,Yuki Tanaka,yuki.tanaka@example.test,Japan,Tokyo,2024-10-31,true,2025-07-01 09:16:00

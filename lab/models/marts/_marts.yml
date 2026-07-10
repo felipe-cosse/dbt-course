@@ -1,0 +1,71 @@
+version: 2
+
+models:
+  - name: dim_customers
+    description: Customer dimension enriched with order history and a transparent value segment.
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: customer_segment
+        tests:
+          - accepted_values:
+              arguments:
+                values: [high_value, growing, active, prospect]
+
+  - name: dim_products
+    description: Product dimension with unit economics.
+    columns:
+      - name: product_id
+        tests: [not_null, unique]
+
+  - name: fct_orders
+    description: Order-grain fact table. Monetary values stay in source currency; do not sum across currencies without FX conversion.
+    columns:
+      - name: order_id
+        tests: [not_null, unique]
+      - name: customer_id
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_customers')
+                field: customer_id
+      - name: net_revenue
+        tests:
+          - positive_value:
+              arguments:
+                allow_zero: true
+
+  - name: fct_daily_sales
+    description: Daily sales by currency and channel for fulfilled orders.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_date, currency, sales_channel]
+
+  - name: fct_product_performance
+    description: Product performance by transaction currency.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [product_id, currency]
+
+  - name: fct_daily_sales_incremental
+    description: Incremental teaching model that reprocesses the latest date for late-arriving orders.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_date, currency]
+
+exposures:
+  - name: commerce_operations_scorecard
+    label: Commerce Operations Scorecard
+    type: dashboard
+    maturity: medium
+    url: http://localhost:8080
+    description: Example downstream consumer used to teach lineage and ownership.
+    depends_on:
+      - ref('fct_daily_sales')
+      - ref('fct_product_performance')
+    owner:
+      name: Data Engineering Student
+      email: learner@example.test

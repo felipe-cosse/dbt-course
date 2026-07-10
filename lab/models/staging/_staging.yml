@@ -1,0 +1,117 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: Clean customer records at one row per customer.
+    columns:
+      - name: customer_id
+        description: Stable customer identifier from the source system.
+        tests: [not_null, unique]
+      - name: email
+        tests: [not_null]
+      - name: signup_date
+        tests: [not_null]
+
+  - name: stg_products
+    description: Product catalog at one row per SKU.
+    columns:
+      - name: product_id
+        tests: [not_null, unique]
+      - name: unit_cost
+        tests:
+          - positive_value
+      - name: list_price
+        tests:
+          - positive_value
+
+  - name: stg_orders
+    description: Normalized order headers at one row per order.
+    columns:
+      - name: order_id
+        tests: [not_null, unique]
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
+      - name: order_status
+        tests:
+          - accepted_values:
+              arguments:
+                values: [completed, shipped, returned, cancelled, pending]
+      - name: sales_channel
+        tests:
+          - accepted_values:
+              arguments:
+                values: [web, mobile, marketplace]
+
+  - name: stg_order_items
+    description: Order line items at one row per order item.
+    columns:
+      - name: order_item_id
+        tests: [not_null, unique]
+      - name: order_id
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_orders')
+                field: order_id
+      - name: product_id
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_products')
+                field: product_id
+      - name: quantity
+        tests:
+          - positive_value
+      - name: unit_price
+        tests:
+          - positive_value
+      - name: discount_pct
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+                inclusive: true
+
+  - name: stg_payments
+    description: Payment attempts at one row per payment.
+    columns:
+      - name: payment_id
+        tests: [not_null, unique]
+      - name: order_id
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_orders')
+                field: order_id
+      - name: payment_amount
+        tests:
+          - positive_value
+      - name: payment_status
+        tests:
+          - accepted_values:
+              arguments:
+                values: [captured, authorized, failed]
+
+  - name: stg_returns
+    description: Product returns at one row per return event.
+    columns:
+      - name: return_id
+        tests: [not_null, unique]
+      - name: order_item_id
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_order_items')
+                field: order_item_id
+      - name: return_quantity
+        tests:
+          - positive_value
+      - name: refund_amount
+        tests:
+          - positive_value

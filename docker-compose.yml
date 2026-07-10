@@ -1,0 +1,66 @@
+name: dbt-engineering-course
+
+services:
+  dbt:
+    build:
+      context: .
+      dockerfile: Dockerfile.dbt
+    working_dir: /workspace/lab
+    volumes:
+      - .:/workspace
+    environment:
+      DBT_PROFILES_DIR: /workspace/lab
+      DBT_DUCKDB_PATH: /workspace/lab/warehouse.duckdb
+      DBT_POSTGRES_HOST: postgres
+      DBT_POSTGRES_PORT: "5432"
+      DBT_POSTGRES_USER: dbt_student
+      DBT_POSTGRES_PASSWORD: dbt_student
+      DBT_POSTGRES_DB: analytics
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: dbt_student
+      MYSQL_PASSWORD: dbt_student
+      MYSQL_DATABASE: commerce_oltp
+    ports:
+      - "8080:8080"
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: course_root_password
+      MYSQL_DATABASE: commerce_oltp
+      MYSQL_USER: dbt_student
+      MYSQL_PASSWORD: dbt_student
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_course_data:/var/lib/mysql
+      - ./data/mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: analytics
+      POSTGRES_USER: dbt_student
+      POSTGRES_PASSWORD: dbt_student
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_course_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  mysql_course_data:
+  postgres_course_data:
+

@@ -1,0 +1,13 @@
+product_id,product_name,category,unit_cost,list_price,is_active
+SKU001,Mechanical Keyboard,Peripherals,42.00,89.00,true
+SKU002,Wireless Mouse,Peripherals,18.00,39.00,true
+SKU003,USB-C Dock,Connectivity,54.00,119.00,true
+SKU004,1080p Webcam,Video,31.00,69.00,true
+SKU005,Noise-Cancelling Headset,Audio,68.00,149.00,true
+SKU006,Laptop Stand,Workspace,16.00,45.00,true
+SKU007,Desk Mat,Workspace,8.00,24.00,true
+SKU008,Portable SSD 1TB,Storage,62.00,109.00,true
+SKU009,USB-C Cable 2m,Connectivity,5.00,16.00,true
+SKU010,Smart LED Desk Lamp,Workspace,29.00,64.00,true
+SKU011,Microphone,Audio,49.00,99.00,true
+SKU012,Ergonomic Chair Cushion,Workspace,21.00,52.00,false

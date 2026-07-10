@@ -1,0 +1,39 @@
+version: 2
+
+seeds:
+  - name: customers
+    description: Deterministic synthetic customers for the offline course; not real people or accounts.
+    config:
+      column_types:
+        customer_id: varchar(16)
+  - name: products
+    description: Deterministic synthetic product catalog.
+    config:
+      column_types:
+        product_id: varchar(16)
+  - name: orders
+    description: Deterministic synthetic order headers.
+    config:
+      column_types:
+        order_id: varchar(16)
+        customer_id: varchar(16)
+  - name: order_items
+    description: Deterministic synthetic order line items.
+    config:
+      column_types:
+        order_item_id: varchar(16)
+        order_id: varchar(16)
+        product_id: varchar(16)
+  - name: payments
+    description: Deterministic synthetic payment attempts.
+    config:
+      column_types:
+        payment_id: varchar(16)
+        order_id: varchar(16)
+  - name: returns
+    description: Deterministic synthetic return events.
+    config:
+      column_types:
+        return_id: varchar(16)
+        order_item_id: varchar(16)
+

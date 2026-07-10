@@ -1,0 +1,48 @@
+name: dbt_engineering_course
+version: 1.0.0
+config-version: 2
+
+profile: dbt_course
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: target
+clean-targets:
+  - target
+  - dbt_packages
+  - logs
+
+vars:
+  source_mode: seed
+  mysql_extract_dir: ../data/mysql_extracts
+  enable_uci: false
+  uci_csv_path: ../data/uci_online_retail/online_retail.csv
+
+models:
+  dbt_engineering_course:
+    staging:
+      +materialized: view
+      +schema: staging
+    intermediate:
+      +materialized: ephemeral
+    marts:
+      +materialized: table
+      +schema: marts
+    real_data:
+      +materialized: view
+      +schema: real_data
+
+seeds:
+  dbt_engineering_course:
+    +schema: raw
+    +quote_columns: false
+
+snapshots:
+  dbt_engineering_course:
+    +target_schema: snapshots
+

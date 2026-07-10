@@ -1,0 +1,13 @@
+version: 2
+
+models:
+  - name: uci_online_retail
+    description: Optional real public transaction data from UCI dataset 352, enabled only after explicit import.
+    columns:
+      - name: invoice_no
+        tests: [not_null]
+      - name: stock_code
+        tests: [not_null]
+  - name: uci_daily_sales
+    description: Daily and country-level aggregation of the imported UCI transactions.
+

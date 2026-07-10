@@ -1,0 +1,18 @@
+dbt_course:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('DBT_DUCKDB_PATH', 'warehouse.duckdb') }}"
+      schema: analytics
+      threads: 4
+    postgres:
+      type: postgres
+      host: "{{ env_var('DBT_POSTGRES_HOST', 'localhost') }}"
+      port: "{{ env_var('DBT_POSTGRES_PORT', '5433') | int }}"
+      user: "{{ env_var('DBT_POSTGRES_USER', 'dbt_student') }}"
+      password: "{{ env_var('DBT_POSTGRES_PASSWORD', 'dbt_student') }}"
+      dbname: "{{ env_var('DBT_POSTGRES_DB', 'analytics') }}"
+      schema: analytics
+      threads: 4
+
