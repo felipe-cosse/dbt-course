@@ -23,6 +23,16 @@ operational extraction source.
 
 ---
 
+## Product tour
+
+### Course overview
+
+![DBT Forge course overview showing the curriculum path, progress, and capstone](docs/images/dbt-forge-course-overview.jpg)
+
+### Interactive lesson workbench
+
+![DBT Forge lesson workbench with SQL editor, terminal, data preview, and lesson steps](docs/images/dbt-forge-lesson-workbench.jpg)
+
 ## Why DBT Forge?
 
 Most dbt tutorials stop after a few models and tests. DBT Forge follows the
@@ -370,4 +380,3 @@ Dataset licensing is separate: the bundled UCI Online Retail sample is licensed
 under CC BY 4.0 and must retain its attribution. The synthetic course fixtures
 are generated locally and documented in
 [`data/SYNTHETIC_DATA.md`](data/SYNTHETIC_DATA.md).
-
